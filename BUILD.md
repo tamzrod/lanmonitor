@@ -2,7 +2,11 @@
 
 ## Requirements
 
-* Go 1.22 or newer. No C compiler, no SDK, no third-party Go modules.
+* Go 1.22 or newer. No C compiler and no Windows SDK.
+* The application uses `golang.org/x/image` to decode and scale the embedded WebP
+  QR images. It is compiled into the executable; there is no external runtime,
+  image file or installer. Tests also use `github.com/makiuchi-d/gozxing` to
+  decode the displayed QR codes; that module is test-only.
 * The program imports only `kernel32.dll` at load time; `user32.dll`, `gdi32.dll`,
   `iphlpapi.dll`, `shell32.dll` and `comctl32.dll` are resolved at runtime, so
   nothing else has to be present.
@@ -28,6 +32,32 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -H=wi
 DWARF tables, and `-H=windowsgui` marks the PE subsystem as GUI so Windows does
 not open a console window. The release asset is this binary under the name
 `lanmonitor-v3.exe`.
+
+## Assets and icon
+
+The source assets live under `assets/`:
+
+| File | Purpose | SHA256 |
+| --- | --- | --- |
+| `maya.webp` | Maya donation QR card, original upload | `0480510c7fe673a8e769dccd37c5f65f1bacdfae52893b7c0600bcdc06461112` |
+| `gcash.webp` | GCash donation QR card, original upload | `6189ac97a550288f697a496d9039844fa45330d2512ce92f4782823d50af962b` |
+| `lanmonitor.ico` | Retro network icon, 16–256 px | `15d1bd6937b8cbb20dc5d735e013571aee859f9b159353ce2567cd6198346aaa` |
+
+The WebP files are embedded with `//go:embed`. The About dialog crops each image
+to the QR code plus its white quiet zone and scales it with the system DPI. The
+source files are not modified and the QR codes are not regenerated. Tests pin the
+checksums and decode both QR codes at the display sizes.
+
+The icon is embedded through `rsrc_windows_amd64.syso`, which is committed so a
+normal `go build` includes it. Regenerate it only when the icon changes:
+
+```sh
+go install github.com/akavel/rsrc@latest
+rsrc -ico assets/lanmonitor.ico -o rsrc_windows_amd64.syso
+```
+
+The icon resource ID is 1. `cmd/verify-pe` checks the PE header and confirms that
+`RT_GROUP_ICON` 1 contains the seven icon images.
 
 ## Tests
 
@@ -61,6 +91,7 @@ value the scanner reads.
 ## Verify the artifact
 
 ```sh
+go run ./cmd/verify-pe lanmonitor-v3.exe       # PE32+ AMD64 GUI and icon resource 1
 file lanmonitor-v3.exe                         # PE32+ executable (GUI) x86-64
 go version -m lanmonitor-v3.exe                # build settings: CGO_ENABLED=0, -trimpath, -s -w
 objdump -p lanmonitor-v3.exe | grep "DLL Name" # kernel32.dll only
@@ -109,10 +140,15 @@ Startup
 - Open the dropdown: active Ethernet, Wi-Fi and VPN adapters (including
   WireGuard, OpenVPN and Tailscale) are listed. Docker, WSL, Hyper-V, VMware,
   VirtualBox and loopback are absent.
-- **Help > About** opens a native dialog with a clickable
+- **Help > About** opens a native dialog with the application icon, a clickable
   `https://github.com/tamzrod/lanmonitor` link, the MIT licence and the exact
   quote `Gwapong Pilipino Taas Noo Kahit Kanino!`. Clicking the link opens the
   default browser.
+- The About dialog shows the Support Development message and the Maya and GCash
+  donation QR codes side by side. Both codes scan with the normal phone apps.
+  The QR squares, quiet zones and aspect ratio are not distorted.
+- The executable, title bar, taskbar, Alt+Tab entry and About dialog all show the
+  retro network icon.
 
 Network selector
 
@@ -207,8 +243,9 @@ IP cell context menu
 - Copy IP Address puts the exact validated address on the clipboard.
 - No `cmd.exe` window appears for any action. The client receives the address as
   one argument.
-- There is no traceroute, automatic port scanning, donation QR code or payment
-  feature anywhere in the UI.
+- There is no traceroute or automatic port scanning. The About dialog contains
+  static Maya and GCash donation QR images, but there is no payment processing,
+  tracking or automatic network request.
 
 Display
 
@@ -225,7 +262,8 @@ The v3 candidate was verified with automated checks only, on a Linux build host:
 * `go test -race ./...` passed.
 * `GOOS=windows GOARCH=amd64 go test -c` compiled the Windows ABI tests.
 * The cross-compiled binary was checked as PE32+ AMD64 with the Windows GUI
-  subsystem and a `kernel32.dll`-only import table.
+  subsystem, a `kernel32.dll`-only import table and `RT_GROUP_ICON` resource 1
+  containing the seven icon images.
 
 The network-selector correction adds tests for adapter classification, `/24`
 derivation, filtering, ordering, duplicate preference and labels. Those tests,
@@ -240,6 +278,15 @@ scan, monitor round, hover status and context-menu action reads the committed
 subnet. A change cancels the old rounds, invalidates their session and clears the
 host map. The current candidate's commit and SHA256 are recorded in the v3
 release notes and the final release report.
+
+The assets correction adds the application icon, the enlarged About dialog and
+the Maya/GCash donation QR images. `assets_test.go` pins the original WebP and
+ICO checksums, verifies the ICO has 16, 24, 32, 48, 64, 128 and 256 px images,
+checks the QR crops keep a white quiet zone, and decodes both QR codes at 240,
+300, 360 and 480 px. `cmd/verify-pe` checks the built executable's PE header and
+`RT_GROUP_ICON` 1. The committed `.syso` is built from `assets/lanmonitor.ico`.
+The original assets are byte-for-byte unchanged; only display crops are made at
+runtime.
 
 No Windows runtime or GUI acceptance was performed for v3. The pre-release
 exists so that this checklist can be run on real Windows hardware. The v2 Wine
@@ -275,6 +322,13 @@ results. The `v3` tag is moved to this correction and both assets are replaced.
 No `v4` tag or release was created. The current commit and checksum are recorded
 in the v3 release notes and the final release report.
 
+The assets correction moves the uploaded images into `assets/`, adds the
+application icon, embeds the icon resource and the WebP QR images, and enlarges
+the About dialog with the Support Development section. It replaces the previous
+`lanmonitor-v3.exe` asset (SHA256
+`abf16250f48f2cf3b201f754d93eec60b9c49b51d96bd2e00a820810bbcae793`) and moves
+the `v3` tag to the new correction commit. No `v4` tag or release is created.
+
 ## Verification performed for v2 (historical)
 
 The Windows-specific behaviour of v2 was exercised on Linux with Wine and a
@@ -297,7 +351,8 @@ network, is still pending.
 ## Release procedure
 
 1. Build with the command above from a clean checkout.
-2. Run the verification commands and record the size and SHA256.
+2. Run the verification commands, including `go run ./cmd/verify-pe`, and record
+   the size and SHA256.
 3. Name the binary `lanmonitor-v3.exe`.
 4. Create `SHA256SUMS.txt` with `sha256sum lanmonitor-v3.exe > SHA256SUMS.txt`.
 5. Attach both files to the release and mark it as a pre-release while Windows

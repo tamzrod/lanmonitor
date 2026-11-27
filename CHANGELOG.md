@@ -7,9 +7,18 @@ unchanged.
 
 ### Added
 
-* **Help > About** dialog with a clickable
+* **Help > About** dialog with the application icon, a clickable
   `https://github.com/tamzrod/lanmonitor` link, the MIT licence and the exact
   quote `Gwapong Pilipino Taas Noo Kahit Kanino!`.
+* **Support Development** section in About with the exact message
+  `This software is completely free. If you find it useful, consider supporting its development.`
+  and Maya and GCash donation QR images side by side. The QR codes are embedded
+  and displayed with their quiet zones; Bitcoin support is deferred.
+* Embedded retro network icon used by Windows Explorer, the title bar, the
+  taskbar, Alt+Tab and the About dialog. The icon is compiled into the executable
+  through `rsrc_windows_amd64.syso`.
+* Original WebP and ICO assets under `assets/`, with tests that pin their
+  SHA256 checksums and decode the displayed QR codes at multiple DPI sizes.
 * Right-click menu on every valid IP cell, regardless of ping status: HTTP,
   HTTPS, SSH, Telnet, RDP, SMB, Custom Port, Continuous Ping and Copy IP
   Address.
@@ -32,6 +41,11 @@ unchanged.
 * The window accounts for the new Help menu when sizing the client area.
 * The network input is an editable ComboBox instead of a disabled subnet box. It
   stays editable during discovery and monitoring.
+* The About dialog is larger and lays out the icon, release identity, quote,
+  Support Development message and two QR images side by side. All layout units
+  scale with the system DPI.
+* The WebP decoder and QR images are compiled into the executable. No external
+  image file, installer or runtime is required.
 
 ### Fixed
 
@@ -83,6 +97,13 @@ unchanged.
   drop-down cancellation and late old-subnet results. The `v3` tag and both
   assets are replaced; the current commit and checksum are in the v3 release
   notes.
+* Assets correction: the uploaded WebP cards and ICO were moved into `assets/`
+  with their bytes unchanged, the icon was embedded in the executable and the
+  About dialog gained the Support Development section and both donation QR
+  images. The previous `lanmonitor-v3.exe` SHA256 was
+  `abf16250f48f2cf3b201f754d93eec60b9c49b51d96bd2e00a820810bbcae793`; the
+  replacement commit and checksum are recorded in the v3 release notes. The
+  `v3` tag is moved to the assets correction and both assets are replaced.
 * No v4 tag or release was created; v3 remains a pre-release pending Windows
   acceptance.
 
@@ -92,8 +113,9 @@ unchanged.
   interpolated into a shell command line.
 * The only URL launch uses `ShellExecuteW` with a fixed `open` verb and a
   validated URL.
-* The project contains no traceroute, automatic port scanning, donation QR code
-  or payment feature.
+* The project contains no traceroute, automatic port scanning, payment
+  processing, tracking or automatic network request. The About dialog contains
+  static Maya and GCash donation QR images; they do not process payments.
 
 ## v2
 

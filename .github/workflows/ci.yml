@@ -90,6 +90,10 @@ jobs:
           if ($magic -ne 0x20b) { throw "expected PE32+, got magic 0x{0:x3}" -f $magic }
           if ($subsystem -ne 2) { throw "expected the Windows GUI subsystem, got $subsystem" }
 
+      - name: Verify icon resource
+        shell: bash
+        run: go run ./cmd/verify-pe "$BINARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: lanmonitor-v3-windows-amd64

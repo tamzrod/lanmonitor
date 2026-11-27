@@ -10,10 +10,11 @@ import (
 
 // Application identity. Versioning is integer-only: v3.
 const (
-	appName    = "LAN Monitor"
-	appVersion = 3
-	projectURL = "https://github.com/tamzrod/lanmonitor"
-	aboutQuote = "Gwapong Pilipino Taas Noo Kahit Kanino!"
+	appName        = "LAN Monitor"
+	appVersion     = 3
+	projectURL     = "https://github.com/tamzrod/lanmonitor"
+	aboutQuote     = "Gwapong Pilipino Taas Noo Kahit Kanino!"
+	supportMessage = "This software is completely free. If you find it useful, consider supporting its development."
 )
 
 // Address map and grid geometry. The map is fixed: the usable hosts of a /24.

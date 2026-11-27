@@ -92,6 +92,7 @@ const (
 	wmTimer       = 0x0113
 	wmMouseMove   = 0x0200
 	wmContextMenu = 0x007B
+	wmSetIcon     = 0x0080
 	wmNull        = 0x0000
 
 	wmRoundProgress = 0x8001
@@ -146,6 +147,8 @@ const (
 
 	bsAutoCheckBox  = 0x00000003
 	bsDefPushButton = 0x00000001
+	ssCenter        = 0x00000001
+	ssEtchedHorz    = 0x00000010
 	cbsAutoHScroll  = 0x0040
 	cbsDropDown     = 0x0002
 	cbsDropDownList = 0x0003
@@ -174,6 +177,8 @@ const (
 	dtCell      = 0x00000001 | 0x00000004 | 0x00000020 // DT_CENTER|DT_VCENTER|DT_SINGLELINE
 
 	iconArrow       = 32512
+	iconSmall       = 0
+	iconBig         = 1
 	colorWindowBk   = 6
 	colorDialogBk   = 15
 	stockDefaultGUI = 17
@@ -184,6 +189,7 @@ const (
 
 	logPixelsX       = 88
 	fwNormal         = 400
+	fwBold           = 700
 	defaultCharset   = 1
 	clearTypeQuality = 5
 	uiFontPoints     = 13
@@ -217,6 +223,17 @@ var (
 
 	aboutWindow uintptr
 	aboutLink   uintptr
+
+	appIcon      uintptr
+	appIconSmall uintptr
+	aboutIcon    uintptr
+
+	aboutTitleFont   uintptr
+	aboutHeadingFont uintptr
+	aboutQuoteFont   uintptr
+
+	aboutMayaBitmap  uintptr
+	aboutGCashBitmap uintptr
 
 	portWindow uintptr
 	portScheme uintptr
@@ -321,13 +338,23 @@ func setStatus(text string) {
 	call(user32, "SetWindowTextW", statusLine, text)
 }
 
-func createUIFont() uintptr {
-	if h := call(gdi32, "CreateFontW", -px(uiFontPoints), uintptr(0), uintptr(0), uintptr(0),
-		uintptr(fwNormal), uintptr(0), uintptr(0), uintptr(0), uintptr(defaultCharset),
+func createFont(points, weight, italic int) uintptr {
+	if h := call(gdi32, "CreateFontW", -px(points), uintptr(0), uintptr(0), uintptr(0),
+		uintptr(weight), uintptr(italic), uintptr(0), uintptr(0), uintptr(defaultCharset),
 		uintptr(0), uintptr(0), uintptr(clearTypeQuality), uintptr(0), "Segoe UI"); h != 0 {
 		return h
 	}
 	return call(gdi32, "GetStockObject", uintptr(stockDefaultGUI))
+}
+
+func createUIFont() uintptr {
+	return createFont(uiFontPoints, fwNormal, 0)
+}
+
+func setControlFont(hwnd, font uintptr) {
+	if hwnd != 0 && font != 0 {
+		call(user32, "SendMessageW", hwnd, uintptr(wmSetFont), font, uintptr(1))
+	}
 }
 
 func controlText(h uintptr) string {
@@ -358,6 +385,7 @@ func registerWindowClass(name string, proc uintptr, background uintptr) bool {
 	wc := wndClass{
 		WndProc:    proc,
 		Instance:   instance,
+		Icon:       appIcon,
 		Cursor:     call(user32, "LoadCursorW", uintptr(0), uintptr(iconArrow)),
 		Background: background,
 		ClassName:  uintptr(unsafe.Pointer(&cls[0])),
@@ -648,29 +676,57 @@ func showAbout() {
 		call(user32, "SetForegroundWindow", aboutWindow)
 		return
 	}
+	const (
+		aboutW = 720
+		aboutH = 640
+		qrSize = 240
+	)
 	call(user32, "EnableWindow", mainWindow, 0)
 	aboutWindow = call(user32, "CreateWindowExW", uintptr(0), "LANMonitorAbout", "About LAN Monitor",
-		uintptr(wsPopup|wsCaption|wsSysMenu), px(200), px(200), px(520), px(280),
+		uintptr(wsPopup|wsCaption|wsSysMenu), px(200), px(200), px(aboutW), px(aboutH),
 		mainWindow, uintptr(0), instance, uintptr(0))
 	if aboutWindow == 0 {
 		call(user32, "EnableWindow", mainWindow, 1)
 		showError("Could not open the About dialog.")
 		return
 	}
+	setWindowIcons(aboutWindow)
+	aboutMayaBitmap = 0
+	aboutGCashBitmap = 0
 
-	createChildControl(aboutWindow, "STATIC", windowTitle(), 0, 20, 20, 480, 24, 0)
-	createChildControl(aboutWindow, "STATIC", "Portable Windows AMD64 IPv4 /24 monitor", 0, 20, 50, 480, 20, 0)
-	createChildControl(aboutWindow, "STATIC", "MIT License", 0, 20, 74, 480, 20, 0)
-	createChildControl(aboutWindow, "STATIC", "Project:", 0, 20, 106, 60, 20, 0)
-	linkText := fmt.Sprintf(`<a href="%s">%s</a>`, projectURL, projectURL)
-	aboutLink = createChildControl(aboutWindow, "SysLink", linkText, wsTabStop, 82, 104, 420, 22, idAboutLink)
-	if aboutLink == 0 {
-		aboutLink = createChildControl(aboutWindow, "BUTTON", projectURL, wsTabStop, 82, 102, 420, 26, idAboutLink)
+	iconCtl := createChildControl(aboutWindow, "STATIC", "", ssIcon, 24, 20, 64, 64, 0)
+	if iconCtl != 0 && aboutIcon != 0 {
+		call(user32, "SendMessageW", iconCtl, uintptr(stmSetIcon), aboutIcon, uintptr(0))
 	}
-	createChildControl(aboutWindow, "STATIC", aboutQuote, 0, 20, 144, 480, 24, 0)
-	createChildControl(aboutWindow, "BUTTON", "OK", bsDefPushButton|wsTabStop, 210, 200, 100, 30, idAboutOK)
+	title := createChildControl(aboutWindow, "STATIC", windowTitle(), 0, 104, 16, 580, 32, 0)
+	setControlFont(title, aboutTitleFont)
+	createChildControl(aboutWindow, "STATIC", "Portable Windows AMD64 IPv4 /24 monitor", 0, 104, 50, 580, 20, 0)
+	createChildControl(aboutWindow, "STATIC", "MIT License", 0, 104, 72, 580, 20, 0)
+	createChildControl(aboutWindow, "STATIC", "", ssEtchedHorz, 24, 104, 672, 2, 0)
 
-	centerWindow(aboutWindow, 520, 280)
+	createChildControl(aboutWindow, "STATIC", "Project:", 0, 24, 118, 60, 20, 0)
+	linkText := fmt.Sprintf(`<a href="%s">%s</a>`, projectURL, projectURL)
+	aboutLink = createChildControl(aboutWindow, "SysLink", linkText, wsTabStop, 86, 116, 610, 22, idAboutLink)
+	if aboutLink == 0 {
+		aboutLink = createChildControl(aboutWindow, "BUTTON", projectURL, wsTabStop, 86, 114, 610, 26, idAboutLink)
+	}
+
+	quote := createChildControl(aboutWindow, "STATIC", aboutQuote, 0, 24, 148, 672, 24, 0)
+	setControlFont(quote, aboutQuoteFont)
+
+	heading := createChildControl(aboutWindow, "STATIC", "Support Development", 0, 24, 190, 672, 24, 0)
+	setControlFont(heading, aboutHeadingFont)
+	createChildControl(aboutWindow, "STATIC", supportMessage, 0, 24, 218, 672, 40, 0)
+
+	createChildControl(aboutWindow, "STATIC", "Maya", ssCenter, 90, 266, qrSize, 20, 0)
+	createChildControl(aboutWindow, "STATIC", "GCash", ssCenter, 390, 266, qrSize, 20, 0)
+
+	aboutMayaBitmap = createQRControl(aboutWindow, 90, 290, qrSize, mayaQRWebP, mayaQRCrop, "Maya QR unavailable")
+	aboutGCashBitmap = createQRControl(aboutWindow, 390, 290, qrSize, gcashQRWebP, gcashQRCrop, "GCash QR unavailable")
+
+	createChildControl(aboutWindow, "BUTTON", "OK", bsDefPushButton|wsTabStop, 310, 552, 100, 32, idAboutOK)
+
+	centerWindow(aboutWindow, aboutW, aboutH)
 	call(user32, "ShowWindow", aboutWindow, uintptr(swShow))
 	call(user32, "SetFocus", aboutLink)
 
@@ -716,6 +772,8 @@ func aboutProc(hwnd, m, w, l uintptr) uintptr {
 		call(user32, "DestroyWindow", hwnd)
 		return 0
 	case wmDestroy:
+		deleteBitmap(&aboutMayaBitmap)
+		deleteBitmap(&aboutGCashBitmap)
 		aboutWindow = 0
 		aboutLink = 0
 		return 0
@@ -1263,7 +1321,24 @@ func main() {
 		call(user32, "ReleaseDC", uintptr(0), dc)
 	}
 	instance = call(kernel32, "GetModuleHandleW", uintptr(0))
+	appIcon, appIconSmall = loadAppIcons()
+	aboutIcon = loadIconSize(px(64), px(64))
+	if aboutIcon == 0 {
+		aboutIcon = appIcon
+	}
 	guiFont = createUIFont()
+	aboutTitleFont = createFont(20, fwBold, 0)
+	if aboutTitleFont == 0 {
+		aboutTitleFont = guiFont
+	}
+	aboutHeadingFont = createFont(15, fwBold, 0)
+	if aboutHeadingFont == 0 {
+		aboutHeadingFont = guiFont
+	}
+	aboutQuoteFont = createFont(uiFontPoints, fwNormal, 1)
+	if aboutQuoteFont == 0 {
+		aboutQuoteFont = guiFont
+	}
 
 	icc := initCommonControlsEx{Size: uint32(unsafe.Sizeof(initCommonControlsEx{})), ICC: iccLinkClass}
 	call(comctl32, "InitCommonControlsEx", unsafe.Pointer(&icc))
@@ -1282,6 +1357,7 @@ func main() {
 	if mainWindow == 0 {
 		return
 	}
+	setWindowIcons(mainWindow)
 	if menu := createMainMenu(); menu != 0 {
 		call(user32, "SetMenu", mainWindow, menu)
 		call(user32, "DrawMenuBar", mainWindow)

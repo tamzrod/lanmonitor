@@ -4,10 +4,10 @@
 
 This audit covers the Version 3 source on `feature/version-3`, including the
 Windows-specific `main_windows.go`, the platform-independent `logic.go`,
-`networks.go` and `subnet.go`, the tests, the CI workflow and the release
-artifact checks. It also covers the network-selector correction that republished
-the v3 prerelease and the committed-subnet correction that replaces the
-notification-driven selector.
+`networks.go`, `subnet.go` and `qr.go`, the asset embedding and icon resource,
+the tests, the CI workflow and the release artifact checks. It also covers the
+network-selector correction, the committed-subnet correction and the asset
+integration that republished the v3 prerelease.
 No Windows runtime or GUI acceptance was performed for Version 3; that is the
 purpose of the pre-release.
 
@@ -36,8 +36,8 @@ purpose of the pre-release.
 | DLL | Entry points used | Purpose |
 | --- | --- | --- |
 | `kernel32.dll` | `GetModuleHandleW`, `GlobalAlloc`, `GlobalLock`, `GlobalUnlock`, `GlobalFree`, `RtlMoveMemory` | module handle and clipboard memory |
-| `user32.dll` | window, menu, dialog, message, painting, clipboard and timer calls | native GUI |
-| `gdi32.dll` | `CreateFontW`, `CreateSolidBrush`, `SelectObject`, `SetBkMode`, `SetTextColor`, `DeleteObject` | font and GDI painting |
+| `user32.dll` | window, menu, dialog, message, painting, clipboard, timer, `LoadImageW` and `LoadIconW` calls | native GUI and icon loading |
+| `gdi32.dll` | `CreateFontW`, `CreateSolidBrush`, `SelectObject`, `SetBkMode`, `SetTextColor`, `CreateDIBSection`, `DeleteObject` | font, GDI painting and QR bitmaps |
 | `iphlpapi.dll` | `IcmpCreateFile`, `IcmpSendEcho`, `IcmpCloseHandle` | ICMP echo |
 | `shell32.dll` | `ShellExecuteW` | open a validated HTTP/HTTPS URL with its registered handler |
 | `comctl32.dll` | `InitCommonControlsEx` | register the native SysLink control |
@@ -59,8 +59,16 @@ no DLL entry point and no new ABI structure.
 * String arguments are converted to NUL-terminated UTF-16 buffers in the `call`
   helper, pinned for the duration of the call, and kept alive with
   `runtime.KeepAlive`.
-* `ptrFromUintptr` is used only to recover the `WM_NOTIFY` `LPARAM` that Windows
-  supplies. The pointer is valid only while that message is being handled.
+* `ptrFromUintptr` recovers the `WM_NOTIFY` `LPARAM` that Windows supplies and
+  the pixel pointer returned by `CreateDIBSection`. The `WM_NOTIFY` pointer is
+  valid only while that message is handled. The DIB pointer is owned by the
+  bitmap handle and is copied immediately into a Go slice of exactly
+  `width*height*4` bytes; `runtime.KeepAlive` keeps the `BITMAPINFO` reachable
+  across the call.
+* The icon and bitmap handles are opaque Windows handles. Shared icons loaded
+  with `LR_SHARED` are not destroyed. The two About bitmaps are DIB sections and
+  are deleted with `DeleteObject` in `WM_DESTROY`. No Go pointer is stored in a
+  GDI object or in a window property.
 * Clipboard text is copied with `GlobalAlloc` plus `RtlMoveMemory`; no Go pointer
   is stored in the clipboard allocation.
 * The ICMP reply is parsed from a fixed 128-byte stack buffer after
@@ -101,8 +109,26 @@ no DLL entry point and no new ABI structure.
 * **Help > About** is a native owned window with a SysLink control. A click sends
   `WM_NOTIFY`; the handler opens the fixed project URL. If SysLink is not
   available, a native button with the same URL is used.
-* `projectURL` and `aboutQuote` are exact constants with tests. The quote is
-  `Gwapong Pilipino Taas Noo Kahit Kanino!`.
+* `projectURL`, `aboutQuote` and `supportMessage` are exact constants with tests.
+  The quote is `Gwapong Pilipino Taas Noo Kahit Kanino!`; the support message is
+  `This software is completely free. If you find it useful, consider supporting its development.`
+* The About window shows the application icon in a static icon control and sets
+  `WM_SETICON` for the title bar. The icon is loaded from `RT_GROUP_ICON`
+  resource 1, which `cmd/verify-pe` checks in the built executable.
+* The Maya and GCash WebP cards are embedded with `//go:embed`. At dialog open,
+  `decodeQRImage` decodes the original bytes, crops the full QR code plus its
+  white quiet zone, composites over white and scales with `ApproxBiLinear` to
+  the DPI-scaled display size. The original files are not modified and the QR
+  codes are not regenerated.
+* The scaled images are converted to top-down 32-bit DIB sections and assigned
+  to `SS_BITMAP` static controls with `STM_SETIMAGE`. The two bitmap handles are
+  deleted on `WM_DESTROY`; static controls do not own their bitmaps. If decoding
+  or DIB creation fails, the dialog shows a text fallback instead of crashing.
+* The dialog uses `px()` for every position and size, and scales the About icon
+  and QR bitmaps with the same system DPI. No external image file is read at
+  runtime.
+* The QR codes are static donation images. There is no payment processing,
+  tracking, network request or Bitcoin integration.
 * Custom Port is a native owned window with a protocol combo box, a numeric edit
   and OK/Cancel. The port is validated before the dialog closes, and the scheme
   is restricted to HTTP, HTTPS and SSH.
@@ -178,10 +204,12 @@ no DLL entry point and no new ABI structure.
 
 ## Forbidden features
 
-A source search found no traceroute, tracert, automatic port scan, donation QR
-code or payment integration. The only occurrences of those words are in the
-mission document and in the negative test that rejects them from the menu.
-Manual **Scan**, startup silence, adaptive monitoring and **Stop** are preserved.
+A source search found no traceroute, tracert, automatic port scan or payment
+integration. Donation QR images are present only in the About dialog, as static
+embedded assets; they do not process payments, track scans or make network
+requests. The context-menu contract test still rejects donation, payment and QR
+wording from the host menu. Manual **Scan**, startup silence, adaptive monitoring
+and **Stop** are preserved.
 
 ## Static analysis and automated checks
 
@@ -198,20 +226,27 @@ GOOS=windows GOARCH=amd64 go test -c -o /dev/null .
 ```
 
 The binary was checked for PE32+ AMD64, the Windows GUI subsystem, a
-`kernel32.dll`-only import table, size and SHA256. The corrections added tests
-for network classification, `/24` derivation, filtering, ordering, duplicate
-preference, labels and the committed subnet (A-to-B-to-A switching, manual
-entry, **Scan** and **Monitor** commits, **Refresh**, cancellation and late
-old-subnet results); they pass alongside the existing Version 3 tests. Native
-ComboBox notification ordering is still exercised by the Windows acceptance
-checklist, but the commit path no longer depends on it: the selected CIDR is
-captured from the list and the committed state is authoritative. The results are
-recorded in the release notes and the release evidence.
+`kernel32.dll`-only import table, `RT_GROUP_ICON` resource 1 with seven images,
+size and SHA256. The corrections added tests for network classification, `/24`
+derivation, filtering, ordering, duplicate preference, labels and the committed
+subnet (A-to-B-to-A switching, manual entry, **Scan** and **Monitor** commits,
+**Refresh**, cancellation and late old-subnet results); they pass alongside the
+existing Version 3 tests. The asset tests pin the original WebP and ICO
+checksums, check the ICO image sizes, verify the QR crop quiet zones and decode
+both QR codes with a real decoder at 240, 300, 360 and 480 px. Native ComboBox
+notification ordering is still exercised by the Windows acceptance checklist,
+but the commit path no longer depends on it: the selected CIDR is captured from
+the list and the committed state is authoritative. The results are recorded in
+the release notes and the release evidence.
 
 ## Residual risks and limitations
 
-* Windows GUI runtime acceptance, DPI behaviour and interaction with real clients
-  are not performed. The pre-release is for that acceptance.
+* Windows GUI runtime acceptance, DPI behaviour, icon rendering and interaction
+  with real clients are not performed. The pre-release is for that acceptance.
+* The QR codes decode in automated tests at the display sizes, but actual
+  scanning from a Windows screen with a phone camera still needs acceptance.
+* The About dialog is fixed-layout and DPI-scaled with `px()`. It has not been
+  visually checked at 100 %, 150 % or 200 % scaling on Windows.
 * The committed-subnet model is unit-tested, but native ComboBox notifications
   still need real Windows acceptance. The design no longer depends on their
   ordering: **Scan**, **Monitor mode** and the context menu commit the visible
