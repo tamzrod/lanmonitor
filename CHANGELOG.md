@@ -43,13 +43,21 @@ unchanged.
 * **Refresh** rebuilds the network list without clearing a manually typed CIDR.
 * Selecting a network while monitoring starts a sweep; manual CIDR entry is used
   by the next **Scan** or 15-second sweep.
-* Selecting a ComboBox entry no longer leaves the edit field blank. The
-  selection is committed from `CBN_SELENDOK` through a posted message after the
-  native control has finished updating, and `CB_SETCURSEL(-1)` is not used.
-* Cancelling the ComboBox drop-down restores the text that was in the edit field
-  before it opened, so a manual CIDR is preserved.
-* Scan-session transitions are covered by a unit test; results from a previous
-  subnet are discarded when the target changes.
+* Selecting a ComboBox entry no longer leaves the edit field blank. The chosen
+  CIDR is captured from the list at `CBN_SELENDOK` and committed independently
+  of the transient edit text.
+* **Scan**, **Monitor mode**, the 15-second sweep, the hover status and the
+  context menu all use one authoritative committed subnet instead of reading the
+  ComboBox text. A selected entry, a manual entry and a refresh cannot disagree
+  about the target.
+* A subnet change cancels rounds in flight, invalidates their scan session and
+  clears the stale host map. Results from an old subnet, including after an
+  A-to-B-to-A switch, are discarded.
+* Cancelling the ComboBox drop-down after a selection keeps the selected CIDR;
+  cancelling without a selection restores the pre-drop text, so a manual CIDR is
+  preserved.
+* **Refresh** rebuilds the network list without changing the committed subnet,
+  its session or the host map, and still preserves a manually typed CIDR.
 * Adapter detection performs no ICMP and preserves startup silence.
 
 ### Release correction
@@ -63,6 +71,18 @@ unchanged.
   `41e169bfbc73389ee33e6799c424c6a9bd55193c`.
 * First correction `lanmonitor-v3.exe` SHA256:
   `f89559c1fde94d10519414f919df0f674ac4d7e9d92ea60a90939af9f843e536`.
+* ComboBox notification correction commit:
+  `561a6eff961dda5d4a3695885b0429007c440cce`.
+* ComboBox notification correction `lanmonitor-v3.exe` SHA256:
+  `302bb13e32de8c298460e5cfaff5b210c24001f49b28893e6db69ca445b42e33`.
+* Committed-subnet correction: `subnet.go` now owns the authoritative subnet and
+  the host map. The reported failure (a selected entry displayed but **Scan** or
+  **Monitor mode** reverting to the previous subnet) is fixed, including when
+  `CBN_SELENDCANCEL` arrives after the selection. Regression tests cover
+  A-to-B-to-A switching, manual entry, **Scan**, **Monitor**, **Refresh**,
+  drop-down cancellation and late old-subnet results. The `v3` tag and both
+  assets are replaced; the current commit and checksum are in the v3 release
+  notes.
 * No v4 tag or release was created; v3 remains a pre-release pending Windows
   acceptance.
 
