@@ -43,15 +43,26 @@ unchanged.
 * **Refresh** rebuilds the network list without clearing a manually typed CIDR.
 * Selecting a network while monitoring starts a sweep; manual CIDR entry is used
   by the next **Scan** or 15-second sweep.
+* Selecting a ComboBox entry no longer leaves the edit field blank. The
+  selection is committed from `CBN_SELENDOK` through a posted message after the
+  native control has finished updating, and `CB_SETCURSEL(-1)` is not used.
+* Cancelling the ComboBox drop-down restores the text that was in the edit field
+  before it opened, so a manual CIDR is preserved.
+* Scan-session transitions are covered by a unit test; results from a previous
+  subnet are discarded when the target changes.
 * Adapter detection performs no ICMP and preserves startup silence.
 
 ### Release correction
 
 * The v3 prerelease was republished from the corrected network-selector commit.
-* Previous v3 prerelease commit:
+* Original v3 prerelease commit:
   `5d9cd8ebec408566f9dce20189dfabde7bf1f0af`.
-* Previous `lanmonitor-v3.exe` SHA256:
+* Original `lanmonitor-v3.exe` SHA256:
   `5411833641483be162ab457eeecced5331ddc0ee14e46fd0e90f0582858a0d90`.
+* First network-selector correction commit:
+  `41e169bfbc73389ee33e6799c424c6a9bd55193c`.
+* First correction `lanmonitor-v3.exe` SHA256:
+  `f89559c1fde94d10519414f919df0f674ac4d7e9d92ea60a90939af9f843e536`.
 * No v4 tag or release was created; v3 remains a pre-release pending Windows
   acceptance.
 

@@ -48,9 +48,11 @@ and `INITCOMMONCONTROLSEX`.
 Unit tests cover subnet parsing, network adapter classification and filtering,
 `/24` derivation from adapter addresses, candidate ordering and de-duplication,
 the address map, grid geometry and hit testing, the promotion/demotion state
-machine, target selection per round and the monitoring cadence, IPv4 and port
-validation, command construction for every context menu action, the exact
-context menu contract, and the About identity.
+machine, target selection per round, scan-session transitions and the monitoring
+cadence, IPv4 and port validation, command construction for every context menu
+action, the exact context menu contract, and the About identity. Native ComboBox
+notification ordering is checked by the Windows acceptance checklist because it
+depends on the Windows control implementation.
 
 ## Verify the artifact
 
@@ -120,8 +122,17 @@ Network selector
   while a manually typed CIDR is preserved.
 - Type the `/24` of an excluded virtual network and scan it: manual entry is an
   explicit override and still works.
-- Select a dropdown entry: the edit field changes to that CIDR. While monitoring,
-  the selection starts a sweep immediately.
+- Select a dropdown entry: the edit field shows that CIDR, not blank and not the
+  adapter label. The status line names the same CIDR. While monitoring, the
+  selection starts a sweep immediately.
+- Open the dropdown and press Esc, or click outside it: the edit field returns
+  to the text it held before the dropdown opened, including a manually typed
+  CIDR.
+- After selecting an entry, click the edit field and type a different CIDR:
+  manual editing still works. **Scan** and the right-click actions use the
+  displayed CIDR.
+- Switch from one network to another: the previous colours clear, and results
+  from the old sweep do not appear in the new map.
 - Type a different CIDR while monitoring: the next **Scan** or 15-second sweep
   uses it, and the selector stays editable throughout.
 - Watch the packet capture while starting the program and while pressing
@@ -211,9 +222,16 @@ verification below is historical and does not cover the new v3 UI.
 The original v3 prerelease was built from commit
 `5d9cd8ebec408566f9dce20189dfabde7bf1f0af` with `lanmonitor-v3.exe` SHA256
 `5411833641483be162ab457eeecced5331ddc0ee14e46fd0e90f0582858a0d90`.
-The network-selector correction republished the same `v3` prerelease from the
-corrected commit. No `v4` tag or release was created. The current commit and
-checksum are recorded in the v3 release notes and the final release report.
+
+The first network-selector correction was built from commit
+`41e169bfbc73389ee33e6799c424c6a9bd55193c` with `lanmonitor-v3.exe` SHA256
+`f89559c1fde94d10519414f919df0f674ac4d7e9d92ea60a90939af9f843e536`.
+
+The ComboBox notification correction republished the same `v3` prerelease from
+the corrected commit. It commits a selected entry from `CBN_SELENDOK` through a
+posted message and removes `CB_SETCURSEL(-1)`, which cleared the edit field. No
+`v4` tag or release was created. The current commit and checksum are recorded in
+the v3 release notes and the final release report.
 
 ## Verification performed for v2 (historical)
 

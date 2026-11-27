@@ -96,6 +96,8 @@ const (
 
 	wmRoundProgress = 0x8001
 	wmRoundDone     = 0x8002
+	wmComboCommit   = 0x8003
+	wmComboRestore  = 0x8004
 
 	nmClick  = 0xFFFFFFFE
 	nmReturn = 0xFFFFFFFF
@@ -151,7 +153,9 @@ const (
 	cbGetCurSel     = 0x0147
 	cbResetContent  = 0x014B
 	cbSetCurSel     = 0x014E
-	cbnSelChange    = 1
+	cbnDropdown     = 7
+	cbnSelEndOk     = 9
+	cbnSelEndCancel = 10
 	esNumber        = 0x2000
 
 	mfString    = 0x00000000
@@ -200,6 +204,9 @@ var (
 
 	// comboUpdating suppresses ComboBox notifications caused by our own edits.
 	comboUpdating bool
+
+	// comboTextBeforeDrop is restored when the user cancels the drop-down.
+	comboTextBeforeDrop string
 
 	aboutWindow uintptr
 	aboutLink   uintptr
@@ -784,10 +791,10 @@ func startDiscovery() {
 	}
 
 	mapMu.Lock()
-	if targetSubnet != canonical {
+	if next, changed := nextScanSession(targetSubnet, canonical, scanSession); changed {
 		hostStates = [hostLast + 1]hostRecord{}
 		targetSubnet = canonical
-		scanSession++
+		scanSession = next
 	}
 	ids := targets(true, hostStates[:])
 	session := scanSession
@@ -1045,8 +1052,19 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 		case idMonitor:
 			setMonitoring(hwnd)
 		case idSubnet:
-			if !comboUpdating && uint32(w)>>16 == cbnSelChange {
-				selectNetwork()
+			if !comboUpdating {
+				// CBN_SELCHANGE arrives before the combo finishes updating its
+				// edit field. Commit on CBN_SELENDOK and restore on
+				// CBN_SELENDCANCEL through posted messages so native processing
+				// completes first.
+				switch uint32(w) >> 16 {
+				case cbnDropdown:
+					comboTextBeforeDrop = controlText(subnetCombo)
+				case cbnSelEndOk:
+					call(user32, "PostMessageW", hwnd, uintptr(wmComboCommit), uintptr(0), uintptr(0))
+				case cbnSelEndCancel:
+					call(user32, "PostMessageW", hwnd, uintptr(wmComboRestore), uintptr(0), uintptr(0))
+				}
 			}
 		case idRefresh:
 			refreshNetworks()
@@ -1077,38 +1095,51 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 	case wmRoundDone:
 		handleRoundDone(hwnd, w, l)
 		return 0
+	case wmComboCommit:
+		selectNetwork()
+		return 0
+	case wmComboRestore:
+		restoreNetworkText()
+		return 0
 	}
 	return call(user32, "DefWindowProcW", hwnd, m, w, l)
 }
 
 // refreshNetworkList rebuilds the ComboBox items. A manually typed CIDR is
-// kept when preserve is true; otherwise the best detected network is selected.
+// kept when preserve is true; otherwise the best detected network is filled in.
 func refreshNetworkList(preserve bool) {
 	current := strings.TrimSpace(controlText(subnetCombo))
 	networkList = detectedNetworks()
 	comboUpdating = true
+	// CB_RESETCONTENT clears the items, the selection and the edit text. Do not
+	// follow it with CB_SETCURSEL(-1): that clears the edit control again and can
+	// erase the text set below.
 	call(user32, "SendMessageW", subnetCombo, uintptr(cbResetContent), uintptr(0), uintptr(0))
 	for _, c := range networkList {
 		call(user32, "SendMessageW", subnetCombo, uintptr(cbAddString), uintptr(0), c.Label())
 	}
-	call(user32, "SendMessageW", subnetCombo, uintptr(cbSetCurSel), ^uintptr(0), uintptr(0))
+	comboUpdating = false
 	switch {
 	case preserve && current != "":
-		call(user32, "SetWindowTextW", subnetCombo, current)
+		setComboCIDR(current)
 	case len(networkList) > 0:
-		call(user32, "SetWindowTextW", subnetCombo, networkList[0].CIDR)
+		setComboCIDR(networkList[0].CIDR)
 	}
+}
+
+// setComboCIDR replaces the edit text without changing the list selection.
+// CB_SETCURSEL(-1) is deliberately not used: it clears the edit control and can
+// override this text when called during a selection notification.
+func setComboCIDR(cidr string) {
+	comboUpdating = true
+	call(user32, "SetWindowTextW", subnetCombo, cidr)
 	comboUpdating = false
 }
 
-// setComboCIDR clears the list selection before setting the edit text. Without
-// this, cancelling the drop-down can restore the selected label instead of the
-// CIDR that Scan expects.
-func setComboCIDR(cidr string) {
-	comboUpdating = true
-	call(user32, "SendMessageW", subnetCombo, uintptr(cbSetCurSel), ^uintptr(0), uintptr(0))
-	call(user32, "SetWindowTextW", subnetCombo, cidr)
-	comboUpdating = false
+func restoreNetworkText() {
+	if comboTextBeforeDrop != "" {
+		setComboCIDR(comboTextBeforeDrop)
+	}
 }
 
 func refreshNetworks() {
@@ -1123,14 +1154,16 @@ func refreshNetworks() {
 func selectNetwork() {
 	idx := int(call(user32, "SendMessageW", subnetCombo, uintptr(cbGetCurSel), uintptr(0), uintptr(0)))
 	if idx < 0 || idx >= len(networkList) {
+		restoreNetworkText()
 		return
 	}
-	setComboCIDR(networkList[idx].CIDR)
+	cidr := networkList[idx].CIDR
+	setComboCIDR(cidr)
 	if monitoring {
 		startDiscovery()
 		return
 	}
-	setStatus("Selected " + networkList[idx].CIDR + " - press Scan")
+	setStatus("Selected " + cidr + " - press Scan")
 }
 
 func main() {

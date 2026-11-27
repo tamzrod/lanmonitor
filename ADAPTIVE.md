@@ -104,11 +104,14 @@ Hover text is only a report; it does not change monitoring state.
 
 The network ComboBox stays editable while monitoring. Selecting a detected
 network starts a sweep immediately; a manually typed CIDR is read by the next
-**Scan** or the next 15-second sweep. When the canonical subnet changes,
-`startDiscovery` increments the scan session and clears the map, so results from
-a round started on the previous subnet are discarded. A sweep already in flight
-finishes on its old subnet; a queued sweep picks up the new one. **Stop** is no
-longer required to change networks.
+**Scan** or the next 15-second sweep. A selection is committed from
+`CBN_SELENDOK` through a posted message, so the edit field holds the CIDR before
+`startDiscovery` reads it. Cancelling the drop-down restores the pre-drop text.
+When the canonical subnet changes, `startDiscovery` uses `nextScanSession` to
+increment the scan session and clears the map, so results from a round started
+on the previous subnet are discarded. A sweep already in flight finishes on its
+old subnet; a queued sweep picks up the new one. **Stop** is no longer required
+to change networks.
 
 ## Known behaviour worth knowing during acceptance
 
