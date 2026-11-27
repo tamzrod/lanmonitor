@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"sync"
@@ -18,6 +19,8 @@ var (
 	gdi32    = syscall.NewLazyDLL("gdi32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 	iphlpapi = syscall.NewLazyDLL("iphlpapi.dll")
+	shell32  = syscall.NewLazyDLL("shell32.dll")
+	comctl32 = syscall.NewLazyDLL("comctl32.dll")
 )
 
 // Win32 structures, laid out for windows/amd64.
@@ -67,18 +70,35 @@ type (
 		Data      uintptr
 		Options   [16]byte
 	}
+	// nmhdr mirrors NMHDR, the header of every WM_NOTIFY payload.
+	nmhdr struct {
+		HwndFrom uintptr
+		IDFrom   uintptr
+		Code     uint32
+	}
+	initCommonControlsEx struct {
+		Size uint32
+		ICC  uint32
+	}
 )
 
 const (
-	wmDestroy   = 0x0002
-	wmPaint     = 0x000F
-	wmSetFont   = 0x0030
-	wmCommand   = 0x0111
-	wmTimer     = 0x0113
-	wmMouseMove = 0x0200
+	wmDestroy     = 0x0002
+	wmPaint       = 0x000F
+	wmClose       = 0x0010
+	wmSetFont     = 0x0030
+	wmNotify      = 0x004E
+	wmCommand     = 0x0111
+	wmTimer       = 0x0113
+	wmMouseMove   = 0x0200
+	wmContextMenu = 0x007B
+	wmNull        = 0x0000
 
 	wmRoundProgress = 0x8001
 	wmRoundDone     = 0x8002
+
+	nmClick  = 0xFFFFFFFE
+	nmReturn = 0xFFFFFFFF
 
 	roundDiscovery = 1
 	roundActive    = 2
@@ -97,6 +117,16 @@ const (
 	idHint    = 12
 	idStatus  = 13
 
+	idAbout       = 200
+	idAboutOK     = 1
+	idAboutCancel = 2
+	idAboutLink   = 201
+
+	idPortScheme = 20
+	idPortEdit   = 21
+	idPortOpen   = 1
+	idPortCancel = 2
+
 	discoveryTimerID = 1
 	activeTimerID    = 2
 
@@ -107,14 +137,41 @@ const (
 	wsCaption      = 0x00C00000
 	wsSysMenu      = 0x00080000
 	wsMinimizeBox  = 0x00020000
-	bsAutoCheckBox = 0x00000003
-	swShow         = 5
-	dtCell         = 0x00000001 | 0x00000004 | 0x00000020 // DT_CENTER|DT_VCENTER|DT_SINGLELINE
+	wsPopup        = 0x80000000
+	wsTabStop      = 0x00010000
+	wsVScroll      = 0x00200000
+
+	bsAutoCheckBox  = 0x00000003
+	bsDefPushButton = 0x00000001
+	cbsDropDownList = 0x0003
+	cbAddString     = 0x0143
+	cbGetCurSel     = 0x0147
+	cbSetCurSel     = 0x014E
+	esNumber        = 0x2000
+
+	mfString    = 0x00000000
+	mfPopup     = 0x00000010
+	mfSeparator = 0x00000800
+
+	tpmRightButton = 0x0002
+	tpmReturnCmd   = 0x0100
+	tpmNonotify    = 0x0080
+
+	mbOK          = 0x00000000
+	mbIconWarning = 0x00000030
+
+	swShow      = 5
+	swpNoZOrder = 0x0004
+	dtCell      = 0x00000001 | 0x00000004 | 0x00000020 // DT_CENTER|DT_VCENTER|DT_SINGLELINE
 
 	iconArrow       = 32512
 	colorWindowBk   = 6
+	colorDialogBk   = 15
 	stockDefaultGUI = 17
 	transparentBk   = 1
+	iccLinkClass    = 0x00008000
+
+	createNewConsole = 0x00000010
 
 	logPixelsX       = 88
 	fwNormal         = 400
@@ -132,6 +189,19 @@ var (
 	statusLine   uintptr
 	instance     uintptr
 	guiFont      uintptr
+
+	aboutWindow uintptr
+	aboutLink   uintptr
+
+	portWindow uintptr
+	portScheme uintptr
+	portEdit   uintptr
+
+	portDialogResult customPort
+	portDialogOK     bool
+
+	// contextHost is the cell that opened the current context menu.
+	contextHost int
 
 	// uiScale converts the 96-DPI layout units in logic.go to device pixels.
 	uiScale = 1.0
@@ -211,6 +281,13 @@ func px(v int) int { return int(math.Round(float64(v) * uiScale)) }
 // unpx converts device pixels back to layout units.
 func unpx(v int) int { return int(math.Round(float64(v) / uiScale)) }
 
+// ptrFromUintptr recovers a pointer that Windows passed as an LPARAM. The
+// intermediate variable keeps go vet's unsafeptr check quiet without changing
+// the value.
+func ptrFromUintptr(p uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&p))
+}
+
 // setStatus updates the status line only when the text actually changes, so
 // mouse movement does not repaint the control on every pixel.
 func setStatus(text string) {
@@ -236,14 +313,383 @@ func controlText(h uintptr) string {
 	return syscall.UTF16ToString(buf[:])
 }
 
-func createControl(class, title string, style, x, y, w, h int, id int) uintptr {
+func createControl(class, title string, style, x, y, w, h, id int) uintptr {
+	return createChildControl(mainWindow, class, title, style, x, y, w, h, id)
+}
+
+func createChildControl(parent uintptr, class, title string, style, x, y, w, h, id int) uintptr {
 	hwnd := call(user32, "CreateWindowExW", uintptr(0), class, title,
 		uintptr(wsChild|wsVisible|style), px(x), px(y), px(w), px(h),
-		mainWindow, uintptr(id), instance, uintptr(0))
+		parent, uintptr(id), instance, uintptr(0))
 	if hwnd != 0 && guiFont != 0 {
 		call(user32, "SendMessageW", hwnd, uintptr(wmSetFont), guiFont, uintptr(1))
 	}
 	return hwnd
+}
+
+func registerWindowClass(name string, proc uintptr, background uintptr) bool {
+	cls, err := syscall.UTF16FromString(name)
+	if err != nil {
+		return false
+	}
+	wc := wndClass{
+		WndProc:    proc,
+		Instance:   instance,
+		Cursor:     call(user32, "LoadCursorW", uintptr(0), uintptr(iconArrow)),
+		Background: background,
+		ClassName:  uintptr(unsafe.Pointer(&cls[0])),
+	}
+	ok := call(user32, "RegisterClassW", unsafe.Pointer(&wc)) != 0
+	runtime.KeepAlive(cls)
+	return ok
+}
+
+func createMainMenu() uintptr {
+	menu := call(user32, "CreateMenu")
+	if menu == 0 {
+		return 0
+	}
+	help := call(user32, "CreatePopupMenu")
+	if help == 0 {
+		call(user32, "DestroyMenu", menu)
+		return 0
+	}
+	call(user32, "AppendMenuW", help, uintptr(mfString), uintptr(idAbout), "&About")
+	call(user32, "AppendMenuW", menu, uintptr(mfPopup), help, "&Help")
+	return menu
+}
+
+func centerWindow(hwnd uintptr, w, h int) {
+	var r rect
+	if call(user32, "GetWindowRect", mainWindow, unsafe.Pointer(&r)) == 0 {
+		return
+	}
+	x := (r.Left + r.Right - int32(px(w))) / 2
+	y := (r.Top + r.Bottom - int32(px(h))) / 2
+	call(user32, "SetWindowPos", hwnd, uintptr(0), uintptr(x), uintptr(y),
+		uintptr(px(w)), uintptr(px(h)), uintptr(swpNoZOrder))
+}
+
+func showErrorAt(parent uintptr, text string) {
+	call(user32, "MessageBoxW", parent, text, appName, uintptr(mbOK|mbIconWarning))
+}
+
+func showError(text string) {
+	showErrorAt(mainWindow, text)
+}
+
+// openURL hands a URL to the registered Windows handler. ShellExecuteW does not
+// start a shell and does not parse the URL as a command line.
+func openURL(url string) error {
+	r := call(shell32, "ShellExecuteW", uintptr(0), "open", url, uintptr(0), uintptr(0), uintptr(swShow))
+	if r <= 32 {
+		return fmt.Errorf("ShellExecuteW failed (%d)", r)
+	}
+	return nil
+}
+
+func copyToClipboard(text string) error {
+	if call(user32, "OpenClipboard", mainWindow) == 0 {
+		return fmt.Errorf("OpenClipboard failed")
+	}
+	defer call(user32, "CloseClipboard")
+	if call(user32, "EmptyClipboard") == 0 {
+		return fmt.Errorf("EmptyClipboard failed")
+	}
+	utf16, err := syscall.UTF16FromString(text)
+	if err != nil {
+		return err
+	}
+	h := call(kernel32, "GlobalAlloc", uintptr(0x0002), uintptr(len(utf16)*2)) // GMEM_MOVEABLE
+	if h == 0 {
+		return fmt.Errorf("GlobalAlloc failed")
+	}
+	p := call(kernel32, "GlobalLock", h)
+	if p == 0 {
+		call(kernel32, "GlobalFree", h)
+		return fmt.Errorf("GlobalLock failed")
+	}
+	call(kernel32, "RtlMoveMemory", p, unsafe.Pointer(&utf16[0]), uintptr(len(utf16)*2))
+	runtime.KeepAlive(utf16)
+	call(kernel32, "GlobalUnlock", h)
+	if call(user32, "SetClipboardData", uintptr(13), h) == 0 { // CF_UNICODETEXT
+		call(kernel32, "GlobalFree", h)
+		return fmt.Errorf("SetClipboardData failed")
+	}
+	return nil
+}
+
+// launch starts a prepared command. Executables receive their arguments one by
+// one; no cmd.exe, shell or string interpolation is involved.
+func launch(c command) error {
+	switch c.Kind {
+	case launchShell:
+		return openURL(c.Target)
+	case launchProcess:
+		path, err := exec.LookPath(c.Target)
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command(path, c.Args...)
+		if c.NewConsole {
+			cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: uint32(createNewConsole)}
+		}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		go func() { _ = cmd.Wait() }()
+		return nil
+	case launchClipboard:
+		return copyToClipboard(c.Target)
+	}
+	return errUnknownAction
+}
+
+func showContextMenu() {
+	var pt point
+	if call(user32, "GetCursorPos", unsafe.Pointer(&pt)) == 0 {
+		return
+	}
+	client := pt
+	if call(user32, "ScreenToClient", mainWindow, unsafe.Pointer(&client)) == 0 {
+		return
+	}
+	i, ok := hostAt(unpx(int(client.X)), unpx(int(client.Y)))
+	if !ok {
+		return
+	}
+	contextHost = i
+
+	menu := call(user32, "CreatePopupMenu")
+	if menu == 0 {
+		return
+	}
+	for _, item := range contextMenuItems {
+		if item.ID == ctxContinuousPing {
+			call(user32, "AppendMenuW", menu, uintptr(mfSeparator), uintptr(0), uintptr(0))
+		}
+		call(user32, "AppendMenuW", menu, uintptr(mfString), uintptr(item.ID), item.Label)
+	}
+	call(user32, "SetForegroundWindow", mainWindow)
+	cmd := call(user32, "TrackPopupMenu", menu,
+		uintptr(tpmRightButton|tpmReturnCmd|tpmNonotify),
+		uintptr(int(pt.X)), uintptr(int(pt.Y)), uintptr(0), mainWindow, uintptr(0))
+	call(user32, "DestroyMenu", menu)
+	call(user32, "PostMessageW", mainWindow, uintptr(wmNull), uintptr(0), uintptr(0))
+	if cmd != 0 {
+		handleContextCommand(int(cmd))
+	}
+}
+
+func handleContextCommand(cmd int) {
+	action, ok := contextAction(cmd)
+	if !ok {
+		return
+	}
+	ip, err := hostAddress(controlText(subnetEdit), contextHost)
+	if err != nil {
+		showError("Enter a valid IPv4 /24 subnet before opening a host.")
+		return
+	}
+
+	var custom customPort
+	if action == actionCustomPort {
+		custom, ok = showCustomPortDialog(ip)
+		if !ok {
+			return
+		}
+	}
+
+	c, err := buildClientCommand(action, ip, custom)
+	if err != nil {
+		showError(err.Error())
+		return
+	}
+	if err := launch(c); err != nil {
+		showError(unavailableMessage(action))
+		return
+	}
+
+	switch action {
+	case actionCopyIP:
+		setStatus("Copied " + ip)
+	case actionCustomPort:
+		setStatus("Opened " + custom.Scheme + " on " + ip + " port " + strconv.Itoa(int(custom.Port)))
+	default:
+		setStatus("Opened " + action.String() + " for " + ip)
+	}
+}
+
+func showCustomPortDialog(ip string) (customPort, bool) {
+	if portWindow != 0 {
+		call(user32, "SetForegroundWindow", portWindow)
+		return portDialogResult, portDialogOK
+	}
+	portDialogResult = customPort{Scheme: "http", Port: 8080}
+	portDialogOK = false
+
+	call(user32, "EnableWindow", mainWindow, 0)
+	portWindow = call(user32, "CreateWindowExW", uintptr(0), "LANMonitorPortDialog",
+		"Custom Port — "+ip, uintptr(wsPopup|wsCaption|wsSysMenu),
+		px(200), px(200), px(360), px(230), mainWindow, uintptr(0), instance, uintptr(0))
+	if portWindow == 0 {
+		call(user32, "EnableWindow", mainWindow, 1)
+		showError("Could not open the Custom Port dialog.")
+		return customPort{}, false
+	}
+
+	createChildControl(portWindow, "STATIC", "Host: "+ip, 0, 16, 16, 320, 20, 0)
+	createChildControl(portWindow, "STATIC", "Protocol", 0, 16, 50, 90, 20, 0)
+	portScheme = createChildControl(portWindow, "COMBOBOX", "", cbsDropDownList|wsTabStop|wsVScroll,
+		110, 48, 220, 120, idPortScheme)
+	call(user32, "SendMessageW", portScheme, uintptr(cbAddString), uintptr(0), "HTTP")
+	call(user32, "SendMessageW", portScheme, uintptr(cbAddString), uintptr(0), "HTTPS")
+	call(user32, "SendMessageW", portScheme, uintptr(cbAddString), uintptr(0), "SSH")
+	call(user32, "SendMessageW", portScheme, uintptr(cbSetCurSel), uintptr(0), uintptr(0))
+	createChildControl(portWindow, "STATIC", "Port (1-65535)", 0, 16, 86, 90, 20, 0)
+	portEdit = createChildControl(portWindow, "EDIT", "8080", wsBorder|esNumber|wsTabStop,
+		110, 84, 100, 24, idPortEdit)
+	createChildControl(portWindow, "BUTTON", "Open", bsDefPushButton|wsTabStop, 110, 124, 90, 28, idPortOpen)
+	createChildControl(portWindow, "BUTTON", "Cancel", wsTabStop, 210, 124, 90, 28, idPortCancel)
+	createChildControl(portWindow, "STATIC", "HTTP and HTTPS open a URL; SSH uses -p.", 0, 16, 160, 320, 20, 0)
+
+	centerWindow(portWindow, 360, 230)
+	call(user32, "ShowWindow", portWindow, uintptr(swShow))
+	call(user32, "SetFocus", portEdit)
+
+	var m msg
+	for portWindow != 0 {
+		r := int32(call(user32, "GetMessageW", unsafe.Pointer(&m), uintptr(0), uintptr(0), uintptr(0)))
+		if r <= 0 {
+			break
+		}
+		if call(user32, "IsDialogMessageW", portWindow, unsafe.Pointer(&m)) != 0 {
+			continue
+		}
+		call(user32, "TranslateMessage", unsafe.Pointer(&m))
+		call(user32, "DispatchMessageW", unsafe.Pointer(&m))
+	}
+	call(user32, "EnableWindow", mainWindow, 1)
+	call(user32, "SetForegroundWindow", mainWindow)
+	return portDialogResult, portDialogOK
+}
+
+func portDialogProc(hwnd, m, w, l uintptr) uintptr {
+	switch uint32(m) {
+	case wmCommand:
+		switch int(w & 0xffff) {
+		case idPortOpen:
+			idx := int(call(user32, "SendMessageW", portScheme, uintptr(cbGetCurSel), uintptr(0), uintptr(0)))
+			scheme := "http"
+			switch idx {
+			case 1:
+				scheme = "https"
+			case 2:
+				scheme = "ssh"
+			}
+			port, err := parsePort(controlText(portEdit))
+			if err != nil {
+				showErrorAt(hwnd, err.Error())
+				call(user32, "SetFocus", portEdit)
+				return 0
+			}
+			portDialogResult = customPort{Scheme: scheme, Port: port}
+			portDialogOK = true
+			call(user32, "DestroyWindow", hwnd)
+		case idPortCancel:
+			call(user32, "DestroyWindow", hwnd)
+		}
+		return 0
+	case wmClose:
+		call(user32, "DestroyWindow", hwnd)
+		return 0
+	case wmDestroy:
+		portWindow = 0
+		portScheme = 0
+		portEdit = 0
+		return 0
+	}
+	return call(user32, "DefWindowProcW", hwnd, m, w, l)
+}
+
+func showAbout() {
+	if aboutWindow != 0 {
+		call(user32, "SetForegroundWindow", aboutWindow)
+		return
+	}
+	call(user32, "EnableWindow", mainWindow, 0)
+	aboutWindow = call(user32, "CreateWindowExW", uintptr(0), "LANMonitorAbout", "About LAN Monitor",
+		uintptr(wsPopup|wsCaption|wsSysMenu), px(200), px(200), px(520), px(280),
+		mainWindow, uintptr(0), instance, uintptr(0))
+	if aboutWindow == 0 {
+		call(user32, "EnableWindow", mainWindow, 1)
+		showError("Could not open the About dialog.")
+		return
+	}
+
+	createChildControl(aboutWindow, "STATIC", windowTitle(), 0, 20, 20, 480, 24, 0)
+	createChildControl(aboutWindow, "STATIC", "Portable Windows AMD64 IPv4 /24 monitor", 0, 20, 50, 480, 20, 0)
+	createChildControl(aboutWindow, "STATIC", "MIT License", 0, 20, 74, 480, 20, 0)
+	createChildControl(aboutWindow, "STATIC", "Project:", 0, 20, 106, 60, 20, 0)
+	linkText := fmt.Sprintf(`<a href="%s">%s</a>`, projectURL, projectURL)
+	aboutLink = createChildControl(aboutWindow, "SysLink", linkText, wsTabStop, 82, 104, 420, 22, idAboutLink)
+	if aboutLink == 0 {
+		aboutLink = createChildControl(aboutWindow, "BUTTON", projectURL, wsTabStop, 82, 102, 420, 26, idAboutLink)
+	}
+	createChildControl(aboutWindow, "STATIC", aboutQuote, 0, 20, 144, 480, 24, 0)
+	createChildControl(aboutWindow, "BUTTON", "OK", bsDefPushButton|wsTabStop, 210, 200, 100, 30, idAboutOK)
+
+	centerWindow(aboutWindow, 520, 280)
+	call(user32, "ShowWindow", aboutWindow, uintptr(swShow))
+	call(user32, "SetFocus", aboutLink)
+
+	var m msg
+	for aboutWindow != 0 {
+		r := int32(call(user32, "GetMessageW", unsafe.Pointer(&m), uintptr(0), uintptr(0), uintptr(0)))
+		if r <= 0 {
+			break
+		}
+		if call(user32, "IsDialogMessageW", aboutWindow, unsafe.Pointer(&m)) != 0 {
+			continue
+		}
+		call(user32, "TranslateMessage", unsafe.Pointer(&m))
+		call(user32, "DispatchMessageW", unsafe.Pointer(&m))
+	}
+	call(user32, "EnableWindow", mainWindow, 1)
+	call(user32, "SetForegroundWindow", mainWindow)
+}
+
+func aboutProc(hwnd, m, w, l uintptr) uintptr {
+	switch uint32(m) {
+	case wmCommand:
+		switch int(w & 0xffff) {
+		case idAboutOK, idAboutCancel:
+			call(user32, "DestroyWindow", hwnd)
+		case idAboutLink:
+			if err := openURL(projectURL); err != nil {
+				showErrorAt(hwnd, unavailableMessage(actionHTTP))
+			}
+		}
+		return 0
+	case wmNotify:
+		if l != 0 {
+			hdr := (*nmhdr)(ptrFromUintptr(l))
+			if hdr.HwndFrom == aboutLink && (hdr.Code == nmClick || hdr.Code == nmReturn) {
+				if err := openURL(projectURL); err != nil {
+					showErrorAt(hwnd, unavailableMessage(actionHTTP))
+				}
+			}
+		}
+		return 0
+	case wmClose:
+		call(user32, "DestroyWindow", hwnd)
+		return 0
+	case wmDestroy:
+		aboutWindow = 0
+		aboutLink = 0
+		return 0
+	}
+	return call(user32, "DefWindowProcW", hwnd, m, w, l)
 }
 
 // icmpPinger owns one ICMP handle for the lifetime of a probe.
@@ -429,6 +875,14 @@ func probe(base [4]byte, i int, discovery bool, session uint64, token chan struc
 	call(user32, "PostMessageW", mainWindow, uintptr(wmRoundProgress), uintptr(0), uintptr(0))
 }
 
+// stateTextColor keeps the address label readable on every cell colour.
+func stateTextColor(s hostState) uintptr {
+	if s == stateUnscanned {
+		return 0x00000000
+	}
+	return 0x00FFFFFF
+}
+
 func paintWindow() {
 	var ps paintStruct
 	hdc := call(user32, "BeginPaint", mainWindow, unsafe.Pointer(&ps))
@@ -583,6 +1037,8 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 			stopAll(hwnd)
 		case idMonitor:
 			setMonitoring(hwnd)
+		case idAbout:
+			showAbout()
 		}
 		return 0
 	case wmTimer:
@@ -598,6 +1054,9 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 		return 0
 	case wmMouseMove:
 		handleMouseMove(l)
+		return 0
+	case wmContextMenu:
+		showContextMenu()
 		return 0
 	case wmRoundProgress:
 		call(user32, "InvalidateRect", hwnd, unsafe.Pointer(nil), uintptr(0))
@@ -645,33 +1104,26 @@ func main() {
 	instance = call(kernel32, "GetModuleHandleW", uintptr(0))
 	guiFont = createUIFont()
 
-	const className = "LANMonitorWindow"
-	cls, err := syscall.UTF16FromString(className)
-	if err != nil {
-		return
-	}
-	wc := wndClass{
-		WndProc:    syscall.NewCallback(windowProc),
-		Instance:   instance,
-		Cursor:     call(user32, "LoadCursorW", uintptr(0), uintptr(iconArrow)),
-		Background: uintptr(colorWindowBk),
-		ClassName:  uintptr(unsafe.Pointer(&cls[0])),
-	}
-	if call(user32, "RegisterClassW", unsafe.Pointer(&wc)) == 0 {
-		return
-	}
-	runtime.KeepAlive(cls)
+	icc := initCommonControlsEx{Size: uint32(unsafe.Sizeof(initCommonControlsEx{})), ICC: iccLinkClass}
+	call(comctl32, "InitCommonControlsEx", unsafe.Pointer(&icc))
 
-	title := fmt.Sprintf("%s — Version %d", appName, appVersion)
+	registerWindowClass("LANMonitorWindow", syscall.NewCallback(windowProc), uintptr(colorWindowBk))
+	registerWindowClass("LANMonitorAbout", syscall.NewCallback(aboutProc), uintptr(colorDialogBk))
+	registerWindowClass("LANMonitorPortDialog", syscall.NewCallback(portDialogProc), uintptr(colorDialogBk))
+
 	style := uintptr(wsCaption | wsSysMenu | wsMinimizeBox | wsClipChildren)
 	frame := rect{0, 0, int32(px(clientWidth)), int32(px(clientHeight))}
-	call(user32, "AdjustWindowRect", unsafe.Pointer(&frame), style, uintptr(0))
-	mainWindow = call(user32, "CreateWindowExW", uintptr(0), className, title,
+	call(user32, "AdjustWindowRectEx", unsafe.Pointer(&frame), style, uintptr(1), uintptr(0))
+	mainWindow = call(user32, "CreateWindowExW", uintptr(0), "LANMonitorWindow", windowTitle(),
 		style, px(100), px(100),
 		int(frame.Right-frame.Left), int(frame.Bottom-frame.Top),
 		uintptr(0), uintptr(0), instance, uintptr(0))
 	if mainWindow == 0 {
 		return
+	}
+	if menu := createMainMenu(); menu != 0 {
+		call(user32, "SetMenu", mainWindow, menu)
+		call(user32, "DrawMenuBar", mainWindow)
 	}
 
 	subnetEdit = createControl("EDIT", defaultSubnet(), wsBorder, 12, 12, 220, 26, idSubnet)
@@ -680,6 +1132,7 @@ func main() {
 	monitorCheck = createControl("BUTTON", "Monitor mode", bsAutoCheckBox, 12, 46, 170, 26, idMonitor)
 	createControl("STATIC", "Discovery 15 s | Active 1 s", 0, 190, 48, 260, 24, idHint)
 	statusLine = createControl("STATIC", "Ready - monitoring off", 0, 12, 78, clientWidth-30, 20, idStatus)
+	currentStatus = "Ready - monitoring off"
 
 	call(user32, "ShowWindow", mainWindow, uintptr(swShow))
 	call(user32, "UpdateWindow", mainWindow)

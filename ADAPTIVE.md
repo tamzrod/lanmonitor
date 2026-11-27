@@ -1,6 +1,6 @@
 # Adaptive monitoring
 
-This document describes how LAN Monitor v2 decides what to probe and when. It is
+This document describes how LAN Monitor decides what to probe and when. It is
 the reference for the acceptance checklist in [BUILD.md](BUILD.md).
 
 ## Two kinds of round

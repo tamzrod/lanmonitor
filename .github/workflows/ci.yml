@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  BINARY: lanmonitor-v2.exe
+  BINARY: lanmonitor-v3.exe
 
 jobs:
   test:
@@ -43,8 +43,14 @@ jobs:
       - name: Unit tests with race detector
         run: go test -race ./...
 
+      - name: Static analysis
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2024.1.1
+          "$(go env GOPATH)/bin/staticcheck" ./...
+          GOOS=windows GOARCH=amd64 "$(go env GOPATH)/bin/staticcheck" ./...
+
   build:
-    name: Build lanmonitor-v2.exe
+    name: Build lanmonitor-v3.exe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +92,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: lanmonitor-windows-amd64
+          name: lanmonitor-v3-windows-amd64
           path: |
             ${{ env.BINARY }}
             SHA256SUMS.txt

@@ -1,6 +1,41 @@
 # Changelog
 
-## v2 - unreleased
+## v3 - unreleased
+
+Host actions and release identity. Version 2's adaptive monitoring is preserved
+unchanged.
+
+### Added
+
+* **Help > About** dialog with a clickable
+  `https://github.com/tamzrod/lanmonitor` link, the MIT licence and the exact
+  quote `Gwapong Pilipino Taas Noo Kahit Kanino!`.
+* Right-click menu on every valid IP cell, regardless of ping status: HTTP,
+  HTTPS, SSH, Telnet, RDP, SMB, Custom Port, Continuous Ping and Copy IP
+  Address.
+* **Custom Port** dialog for HTTP, HTTPS or SSH on a validated port from 1 to
+  65535.
+* Validated IPv4 and port parsing, command construction tests, and graceful
+  messages when a client or default browser is unavailable.
+* `AUDIT.md`, describing the Win32 API and unsafe-pointer review.
+
+### Changed
+
+* The window title carries the version: `LAN Monitor — Version 3`.
+* Client commands pass each argument directly to the executable. No command
+  shell or `cmd.exe` is used.
+* The window accounts for the new Help menu when sizing the client area.
+
+### Security
+
+* IP addresses are validated as unicast IPv4 before use and are never
+  interpolated into a shell command line.
+* The only URL launch uses `ShellExecuteW` with a fixed `open` verb and a
+  validated URL.
+* The project contains no traceroute, automatic port scanning, donation QR code
+  or payment feature.
+
+## v2
 
 Adaptive monitoring. A full `/24` sweep every 15 seconds discovers hosts; hosts
 that answer are then probed every second until two sweeps in a row miss them.
