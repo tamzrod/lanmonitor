@@ -8,7 +8,6 @@ import (
  "sync"
  "sync/atomic"
  "syscall"
- "time"
  "unsafe"
 )
 
@@ -52,7 +51,7 @@ func start(){
  label("Scanning "+next+" ...")
  go func(){
   jobs:=make(chan int);var wg sync.WaitGroup
-  for j:=0;j<16;j++{wg.Add(1);go func(){defer wg.Done();h:=call(ip,"IcmpCreateFile");if h==^uintptr(0)||h==0{return};defer call(ip,"IcmpCloseHandle",h)
+  for j:=0;j<16;j++{wg.Add(1);go func(){defer wg.Done();h:=call(ip,"IcmpCreateFile");if h==^uintptr(0)||h==0{for range jobs{};return};defer call(ip,"IcmpCloseHandle",h)
    for i:=range jobs{if cancel.Load(){continue};a:=net.IPv4(base[0],base[1],base[2],byte(i));ok,rtt:=ping(h,a)
     mu.Lock();p:=&hosts[i];if ok{p.state=1;p.seen=true;p.rtt=rtt}else if p.seen{p.state=2}else{p.state=3};mu.Unlock()
     call(u,"PostMessageW",window,0x8001,0,0)
@@ -66,14 +65,14 @@ func cell(i int)rect{x:=int32((i-1)%16)*43+12;y:=int32((i-1)/16)*28+100;return r
 func draw(){
  var p paint;dc:=call(u,"BeginPaint",window,uintptr(unsafe.Pointer(&p)));defer call(u,"EndPaint",window,uintptr(unsafe.Pointer(&p)))
  mu.Lock();defer mu.Unlock()
- colors:=[]uintptr{0xaaaaaa,0x508020,0x4040d0,0x606060}
+ colors:=[]uintptr{0xaaaaaa,0x459520,0x4040d0,0x606060}
  call(g,"SetBkMode",dc,1);call(g,"SetTextColor",dc,0xffffff)
  for i:=1;i<=254;i++{r:=cell(i);b:=call(g,"CreateSolidBrush",colors[hosts[i].state]);call(u,"FillRect",dc,uintptr(unsafe.Pointer(&r)),b);call(g,"DeleteObject",b);s:=fmt.Sprint(i);call(u,"DrawTextW",dc,str(s),uintptr(len(s)),uintptr(unsafe.Pointer(&r)),0x25)}
 }
 func proc(h uintptr,m uint32,w,l uintptr)uintptr{
  switch m{
  case 2:cancel.Store(true);call(u,"PostQuitMessage",0);return 0
- case 15:draw();return 0
+ case 15:if window!=0{draw();return 0}
  case 0x111:
  switch w&0xffff{
  case 1:start()
@@ -108,5 +107,4 @@ func main(){
  status=control("STATIC","Ready - no automatic scan",0,12,78,680,20,13)
  call(u,"ShowWindow",window,5);call(u,"UpdateWindow",window)
  var m msg;for{v:=int32(call(u,"GetMessageW",uintptr(unsafe.Pointer(&m)),0,0,0));if v<=0{break};call(u,"TranslateMessage",uintptr(unsafe.Pointer(&m)));call(u,"DispatchMessageW",uintptr(unsafe.Pointer(&m)))}
- _=time.Second
 }
