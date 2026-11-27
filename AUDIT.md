@@ -3,9 +3,11 @@
 ## Scope
 
 This audit covers the Version 3 source on `feature/version-3`, including the
-Windows-specific `main_windows.go`, the platform-independent `logic.go`, the
-tests, the CI workflow and the release artifact checks. No Windows runtime or GUI
-acceptance was performed for Version 3; that is the purpose of the pre-release.
+Windows-specific `main_windows.go`, the platform-independent `logic.go` and
+`networks.go`, the tests, the CI workflow and the release artifact checks. It
+also covers the network-selector correction that republished the v3 prerelease.
+No Windows runtime or GUI acceptance was performed for Version 3; that is the
+purpose of the pre-release.
 
 ## Release source reconciliation
 
@@ -18,6 +20,11 @@ acceptance was performed for Version 3; that is the purpose of the pre-release.
   the 15 s discovery timer, the 1 s active timer, the two-miss demotion rule,
   the cancellation token and the Stop path are unchanged apart from the version
   constant. Their tests still pass.
+* The original v3 prerelease commit was
+  `5d9cd8ebec408566f9dce20189dfabde7bf1f0af`; its `lanmonitor-v3.exe` SHA256 was
+  `5411833641483be162ab457eeecced5331ddc0ee14e46fd0e90f0582858a0d90`.
+  The network-selector correction republishes the same `v3` tag; no `v4` tag or
+  release was created.
 
 ## Win32 API inventory
 
@@ -33,6 +40,11 @@ acceptance was performed for Version 3; that is the purpose of the pre-release.
 All are Windows system DLLs. The built executable's import table contains only
 `kernel32.dll`; the other DLLs are resolved at runtime through `NewLazyDLL`.
 There is no third-party runtime, installer or database.
+
+The network selector is a standard `COMBOBOX` control created with
+`CreateWindowExW`. It uses the existing `user32.dll` message calls
+(`CB_ADDSTRING`, `CB_RESETCONTENT`, `CB_GETCURSEL`, `SetWindowTextW`), so it adds
+no DLL entry point and no new ABI structure.
 
 ## unsafe.Pointer review
 
@@ -90,6 +102,44 @@ There is no third-party runtime, installer or database.
   and OK/Cancel. The port is validated before the dialog closes, and the scheme
   is restricted to HTTP, HTTPS and SSH.
 
+## Network selector review
+
+* The old subnet edit was replaced with an editable `COMBOBOX`
+  (`CBS_DROPDOWN`), so manual CIDR entry remains possible. The control is never
+  disabled during discovery or monitoring; the previous `EnableWindow` calls
+  were removed.
+* `detectedNetworks` calls `net.Interfaces` and `Interface.Addrs`, which are
+  local adapter enumeration APIs. It sends no ICMP and performs no name
+  resolution, so startup silence is preserved.
+* `candidateSubnet` derives the `/24` containing each adapter address rather
+  than requiring the adapter mask to be `/24`. This is necessary for Tailscale,
+  WireGuard and other VPN adapters that expose `/32` addresses. It rejects
+  `0.0.0.0/8`, loopback `127/8`, multicast and reserved first octets, and IPv6.
+* `classifyAdapter` includes Ethernet, Wi-Fi and VPN adapters. VPN matching covers
+  WireGuard (`wireguard`, `wg*`), OpenVPN (`openvpn`, `tap*`), Tailscale,
+  ZeroTier, Cloudflare WARP, generic `vpn`, `tun*`, `ppp*`, `utun*`, IPsec,
+  L2TP, SSTP, AnyConnect, GlobalProtect and common vendor names.
+* Exclusion matching covers Docker and container bridges (`docker`, `veth`,
+  `br-`, `virbr`, Podman, CNI, Flannel, Calico), WSL, Hyper-V virtual switches
+  (`hyper-v`, `hyperv`, `vethernet`, `default switch`), VMware (`vmware`,
+  `vmnet`), VirtualBox (`virtualbox`, `vbox`), loopback and pseudo interfaces,
+  Teredo, ISATAP, Npcap/WinPcap, Bluetooth, Wi-Fi Direct and hosted-network
+  adapters. The loopback flag is also checked.
+* Candidates are sorted Ethernet, Wi-Fi, VPN, Other, then by adapter name and
+  CIDR. Duplicate CIDRs are removed after sorting, so a physical Ethernet entry
+  wins over a VPN entry on the same `/24`.
+* The ComboBox is populated with `CB_RESETCONTENT` and `CB_ADDSTRING`. The edit
+  text is set with `SetWindowTextW`; `controlText` reads it with
+  `GetWindowTextW`. **Refresh** captures and restores a manually typed CIDR.
+* `CBN_SELCHANGE` sets the edit text to the selected candidate CIDR and starts a
+  discovery sweep if monitoring is on. Manually typed CIDRs are consumed by
+  **Scan** and the 15-second timer through `parseSubnet`.
+* Tests cover adapter classification, exclusion, `/24` derivation from `/24`,
+  `/32` and shorter masks, ordering, duplicate preference, label text and the
+  real `detectedNetworks` output. No shell or command construction is involved.
+* Manual entry can still target a network excluded from the list. Exclusion is a
+  default list policy, not a security boundary.
+
 ## Forbidden features
 
 A source search found no traceroute, tracert, automatic port scan, donation QR
@@ -112,13 +162,19 @@ GOOS=windows GOARCH=amd64 go test -c -o /dev/null .
 ```
 
 The binary was checked for PE32+ AMD64, the Windows GUI subsystem, a
-`kernel32.dll`-only import table, size and SHA256. The results are recorded in
-the release notes and the release evidence.
+`kernel32.dll`-only import table, size and SHA256. The correction added tests
+for network classification, `/24` derivation, filtering, ordering, duplicate
+preference and labels; they pass alongside the existing Version 3 tests. The
+results are recorded in the release notes and the release evidence.
 
 ## Residual risks and limitations
 
 * Windows GUI runtime acceptance, DPI behaviour and interaction with real clients
   are not performed. The pre-release is for that acceptance.
+* Network detection uses adapter friendly names. A VPN or physical adapter with
+  an unusual name may be classified as `Other`, and a virtual adapter whose name
+  does not match the exclusion list may appear. Manual CIDR entry remains the
+  fallback.
 * `ShellExecuteW` depends on a registered browser handler. If none is registered,
   the UI reports it.
 * SSH and Telnet depend on optional Windows features. Missing clients are

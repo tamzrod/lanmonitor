@@ -45,10 +45,12 @@ GOOS=windows GOARCH=amd64 staticcheck ./...     # Windows static analysis
 of the Win32 structs that are passed to the API by pointer, including `NMHDR`
 and `INITCOMMONCONTROLSEX`.
 
-Unit tests cover subnet parsing, the address map, grid geometry and hit testing,
-the promotion/demotion state machine, target selection per round and the
-monitoring cadence, IPv4 and port validation, command construction for every
-context menu action, the exact context menu contract, and the About identity.
+Unit tests cover subnet parsing, network adapter classification and filtering,
+`/24` derivation from adapter addresses, candidate ordering and de-duplication,
+the address map, grid geometry and hit testing, the promotion/demotion state
+machine, target selection per round and the monitoring cadence, IPv4 and port
+validation, command construction for every context menu action, the exact
+context menu contract, and the About identity.
 
 ## Verify the artifact
 
@@ -91,14 +93,39 @@ Startup
 
 - Launch the program: no ICMP is sent until **Scan** or **Monitor mode** is used.
 - The title bar reads `LAN Monitor — Version 3`.
-- **Monitor mode** is unticked and the status line reads `Ready - monitoring off`.
+- **Monitor mode** is unticked and the status line reads `Ready - monitoring off`,
+  or `No IPv4 networks detected - type a /24 manually` when no eligible adapter
+  exists.
 - All 254 cells are light grey.
-- The subnet box is prefilled with an active `/24` or empty; a non-`/24` entry
-  such as `10.0.0.0/16` is rejected with a message.
+- The network selector is an editable ComboBox prefilled with the best detected
+  `/24` or empty. A non-`/24` entry such as `10.0.0.0/16` is rejected with a
+  message.
+- Open the dropdown: active Ethernet, Wi-Fi and VPN adapters (including
+  WireGuard, OpenVPN and Tailscale) are listed. Docker, WSL, Hyper-V, VMware,
+  VirtualBox and loopback are absent.
 - **Help > About** opens a native dialog with a clickable
   `https://github.com/tamzrod/lanmonitor` link, the MIT licence and the exact
   quote `Gwapong Pilipino Taas Noo Kahit Kanino!`. Clicking the link opens the
   default browser.
+
+Network selector
+
+- On a host with both Ethernet and Wi-Fi, both `/24` networks appear, Ethernet
+  first.
+- With an active WireGuard, OpenVPN or Tailscale adapter, its `/24` appears as a
+  VPN entry. A `/32` VPN address still produces a usable `/24`.
+- With Docker, WSL, Hyper-V, VMware or VirtualBox installed, their virtual
+  networks do not appear.
+- Connect or disconnect a VPN, press **Refresh**, and confirm the list changes
+  while a manually typed CIDR is preserved.
+- Type the `/24` of an excluded virtual network and scan it: manual entry is an
+  explicit override and still works.
+- Select a dropdown entry: the edit field changes to that CIDR. While monitoring,
+  the selection starts a sweep immediately.
+- Type a different CIDR while monitoring: the next **Scan** or 15-second sweep
+  uses it, and the selector stays editable throughout.
+- Watch the packet capture while starting the program and while pressing
+  **Refresh**: detection and refresh send no ICMP.
 
 Manual scan
 
@@ -125,7 +152,8 @@ Adaptive monitoring
   promoted without user action.
 - Tick **Monitor mode** off: timers stop, no further echo requests appear.
 - Press **Stop** during a sweep: probes stop within the 500 ms timeout, the
-  checkbox clears, the subnet box re-enables and the status line reads `Stopped`.
+  checkbox clears, the network selector remains editable and the status line
+  reads `Stopped`.
 - Press **Stop** and then **Scan**: the manual sweep still runs.
 - Close the window during a sweep: the process exits.
 
@@ -170,9 +198,22 @@ The v3 candidate was verified with automated checks only, on a Linux build host:
 * The cross-compiled binary was checked as PE32+ AMD64 with the Windows GUI
   subsystem and a `kernel32.dll`-only import table.
 
+The network-selector correction adds tests for adapter classification, `/24`
+derivation, filtering, ordering, duplicate preference and labels. Those tests,
+the existing Version 3 tests and the Windows ABI compile all pass.
+
 No Windows runtime or GUI acceptance was performed for v3. The pre-release
 exists so that this checklist can be run on real Windows hardware. The v2 Wine
 verification below is historical and does not cover the new v3 UI.
+
+### Release correction record
+
+The original v3 prerelease was built from commit
+`5d9cd8ebec408566f9dce20189dfabde7bf1f0af` with `lanmonitor-v3.exe` SHA256
+`5411833641483be162ab457eeecced5331ddc0ee14e46fd0e90f0582858a0d90`.
+The network-selector correction republished the same `v3` prerelease from the
+corrected commit. No `v4` tag or release was created. The current commit and
+checksum are recorded in the v3 release notes and the final release report.
 
 ## Verification performed for v2 (historical)
 
@@ -203,6 +244,9 @@ network, is still pending.
    acceptance testing is outstanding.
 6. Promote to stable only after documented Windows acceptance and explicit
    human approval.
+7. For a correction, move the existing `v3` tag to the corrected commit and
+   replace both assets. Record the previous commit and checksum in the release
+   notes. Do not create a new major version for a correction.
 
 ## Known build notes
 
