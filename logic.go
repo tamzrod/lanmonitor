@@ -10,10 +10,11 @@ import (
 
 // Application identity. Versioning is integer-only: v3.
 const (
-	appName    = "LAN Monitor"
-	appVersion = 3
-	projectURL = "https://github.com/tamzrod/lanmonitor"
-	aboutQuote = "Gwapong Pilipino Taas Noo Kahit Kanino!"
+	appName        = "LAN Monitor"
+	appVersion     = 3
+	projectURL     = "https://github.com/tamzrod/lanmonitor"
+	aboutQuote     = "Gwapong Pilipino Taas Noo Kahit Kanino!"
+	supportMessage = "This software is completely free. If you find it useful, consider supporting its development."
 )
 
 // Address map and grid geometry. The map is fixed: the usable hosts of a /24.
@@ -264,15 +265,6 @@ func targets(discovery bool, states []hostRecord) []int {
 		}
 	}
 	return ids
-}
-
-// nextScanSession returns the session for a discovery round. A changed subnet
-// increments the session so results from a round on the old subnet are dropped.
-func nextScanSession(target, canonical string, session uint64) (uint64, bool) {
-	if target == canonical {
-		return session, false
-	}
-	return session + 1, true
 }
 
 // parseSubnet validates a CIDR string and returns the network address plus its

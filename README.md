@@ -3,9 +3,10 @@
 A single-file Windows GUI utility that shows which hosts in one IPv4 `/24`
 subnet answer ICMP echo requests, then keeps watching the ones that do.
 
-Version 3 adds a native **Help > About** dialog, a right-click menu on every IP
-cell, and an editable network selector. A discovered host can be opened in HTTP,
-HTTPS, SSH, Telnet, RDP, SMB, a custom port, a continuous ping, or copied to the
+Version 3 adds a native **Help > About** dialog with the application icon and
+optional Maya and GCash donation QR images, a right-click menu on every IP cell,
+and an editable network selector. A discovered host can be opened in HTTP, HTTPS,
+SSH, Telnet, RDP, SMB, a custom port, a continuous ping, or copied to the
 clipboard. The selector auto-detects IPv4 `/24` networks on active Ethernet,
 Wi-Fi and VPN adapters, can be refreshed, and accepts a manually typed CIDR.
 Version 2's adaptive monitoring is unchanged: a full sweep every 15 seconds finds
@@ -14,6 +15,8 @@ network is not flooded with 254 probes per second.
 
 * Portable Windows AMD64 executable (`lanmonitor-v3.exe`), MIT licensed.
 * Native Win32 GUI drawn with GDI; only system DLLs are used.
+* Embedded retro network icon for Explorer, the title bar, the taskbar, Alt+Tab
+  and the About dialog. The executable needs no external image files.
 * Editable network ComboBox with automatic `/24` detection, a refresh button and
   manual CIDR entry.
 * Detects physical Ethernet, Wi-Fi and VPN adapters including WireGuard, OpenVPN
@@ -23,7 +26,9 @@ network is not flooded with 254 probes per second.
 * No installer, no browser, no runtime to install, no external database.
 * Nothing is scanned at startup, and monitoring is off by default.
 * Manual **Scan** and **Stop** buttons.
-* No traceroute, automatic port scanning, donation QR codes or payment features.
+* No traceroute, automatic port scanning, payment processing, tracking or
+  automatic network requests. The About dialog contains static Maya and GCash
+  donation QR images; they are not used for payment processing.
 
 ## Download
 
@@ -47,7 +52,8 @@ verify it against `SHA256SUMS.txt`, and run it. Windows 10 or 11, 64-bit.
    immediately, then every 15 seconds; hosts that answered are probed every
    second.
 6. Right-click any cell, whatever its colour, to open the client menu.
-7. Use **Help > About** for the project URL and the release quote.
+7. Use **Help > About** for the project URL, the release quote and optional
+   Maya and GCash donation QR codes.
 
 **Stop** ends monitoring, cancels probes in flight, discards a queued sweep and
 unticks the box. The map keeps the last known state until the next scan.
@@ -57,10 +63,11 @@ stays editable while monitoring: choosing a different network starts a sweep
 immediately, while a manually typed CIDR takes effect on the next **Scan** or
 the next 15-second sweep.
 
-Selecting a dropdown entry writes that entry's CIDR into the edit field; the
-adapter label stays in the list. Cancelling the dropdown restores the text that
-was in the field before it opened, so a manual CIDR is not lost. A selection
-never leaves the edit field blank.
+Selecting a dropdown entry commits that entry's CIDR immediately; the adapter
+label stays in the list. Cancelling the dropdown restores the text that was in
+the field before it opened, unless a selection was committed while the list was
+open, in which case the selected CIDR stays. A selection never leaves the edit
+field blank.
 
 ## Network selector
 
@@ -92,10 +99,14 @@ Excluded by default:
 typed CIDR and sends no ICMP. Manual entry is always available, so an excluded
 virtual network can still be scanned when that is deliberate.
 
-The selection is committed from `CBN_SELENDOK` through a posted message after
-the native ComboBox has finished updating. The edit field is set to the CIDR
-with `SetWindowTextW`; `CB_SETCURSEL(-1)` is not used because it clears the edit
-control. `CBN_SELENDCANCEL` restores the pre-drop text.
+The committed subnet, not the ComboBox text, is what **Scan**, **Monitor mode**,
+the timers, the hover status and the context menu use. The text is pending
+input: choosing an entry captures its CIDR from the list and commits it, while
+**Scan**, **Monitor mode** and a context-menu action commit the typed text first
+(a selected label maps back to its CIDR). A subnet change cancels rounds in
+flight, invalidates their session, clears the map and rewrites the field with the
+canonical CIDR. The 15-second sweep commits a valid manually typed CIDR; invalid
+or partial text is ignored. Committing the same subnet changes nothing.
 
 ## IP cell context menu
 
@@ -124,10 +135,25 @@ chosen port; SSH uses `-p <port>`.
 
 ## About dialog
 
-**Help > About** shows the release title, the MIT licence, a clickable
-[project URL](https://github.com/tamzrod/lanmonitor) and this exact quote:
+**Help > About** shows the application icon, the release title, the MIT
+licence, a clickable [project URL](https://github.com/tamzrod/lanmonitor) and
+this exact quote:
 
 > Gwapong Pilipino Taas Noo Kahit Kanino!
+
+The **Support Development** section says:
+
+> This software is completely free. If you find it useful, consider supporting its development.
+
+Below that message, the Maya and GCash donation QR images are shown side by
+side. The dialog displays the full QR code plus its white quiet zone, scaled
+with the system DPI, so the code stays square and scannable. The original
+portrait card images remain unchanged in `assets/`; the About dialog does not
+regenerate the QR codes. Bitcoin support is deferred. There is no payment
+processing, tracking or automatic network request.
+
+The same icon is embedded in the executable and used by the title bar, taskbar
+and Alt+Tab.
 
 ## Adaptive monitoring
 
@@ -178,10 +204,19 @@ and sleep states all suppress replies.
 
 ## Build
 
-Go 1.22 or newer, no C toolchain needed:
+Go 1.22 or newer, no C toolchain needed. The WebP decoder is compiled into the
+executable from `golang.org/x/image`; it is not an external runtime. The icon
+resource is committed as `rsrc_windows_amd64.syso`, so a normal build embeds it:
 
 ```sh
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -H=windowsgui" -o lanmonitor-v3.exe .
+```
+
+If the icon changes, regenerate the resource object first:
+
+```sh
+go install github.com/akavel/rsrc@latest
+rsrc -ico assets/lanmonitor.ico -o rsrc_windows_amd64.syso
 ```
 
 See [BUILD.md](BUILD.md) for verification steps, the checksum procedure and the
@@ -200,13 +235,20 @@ GOOS=windows GOARCH=amd64 go test -c -o /dev/null .    # windows-only ABI tests 
 Unit tests cover subnet parsing, network adapter classification and filtering,
 `/24` derivation from adapter addresses, candidate ordering and de-duplication,
 the address map, grid geometry and hit testing, the promotion/demotion state
-machine, target selection per round, scan-session transitions and the monitoring
+machine, target selection per round, the authoritative committed subnet state
+(A-to-B-to-A switching, manual entry, **Scan** and **Monitor** commits,
+**Refresh**, drop-down cancellation and late old-subnet results), the monitoring
 cadence, IPv4 and port validation, client command construction, the context menu
 contract, and the Win32 struct layout checks that run on the Windows CI runner.
-The native ComboBox notification ordering is covered by the Windows acceptance
-checklist in [BUILD.md](BUILD.md). CI builds the executable on `windows-latest`,
-runs the tests on both Linux and Windows, and checks the PE header of the
-artifact.
+The asset tests pin the original WebP and ICO checksums, verify the ICO contains
+16, 24, 32, 48, 64, 128 and 256 pixel images, check the QR crops keep a white
+quiet zone, and decode both QR codes with a real QR decoder at 240, 300, 360 and
+480 pixels. The native ComboBox notification ordering is still exercised by the
+Windows acceptance checklist in [BUILD.md](BUILD.md), but the commit path no
+longer depends on it: the selected CIDR is captured from the list and the
+committed state is authoritative. CI builds the executable on `windows-latest`,
+runs the tests on both Linux and Windows, checks the PE header and verifies the
+embedded icon resource with `cmd/verify-pe`.
 
 ## License
 
