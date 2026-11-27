@@ -1,0 +1,10 @@
+# Build output
+lanmonitor.exe
+*.exe
+
+# Local tooling
+.idea/
+.vscode/
+
+# Release artifact
+SHA256SUMS.txt
