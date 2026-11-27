@@ -75,12 +75,18 @@ Rounds carry two identifiers:
 
 * a per-kind sequence number, so a completion message from a superseded round
   cannot clear the busy flag of the round that replaced it;
-* the scan session, which is incremented whenever the subnet changes. A result
-  from a round started on the previous subnet is discarded instead of being
-  written into the new map.
+* the scan session from the authoritative subnet model. The session increases on
+  every canonical subnet change, including A to B and back to A. A result from a
+  round started before a change is discarded, even after the user returns to the
+  same subnet.
 
-The promoted flag is re-checked under the map lock before a result is applied, so
-an address that was demoted during the round is not updated by it.
+When the canonical subnet changes, `applySubnetChange` closes the cancellation
+token, invalidates both sequence numbers and clears the busy and queued flags.
+The model clears the host map at the same time. A sweep already in flight stops
+launching probes; probes already inside `IcmpSendEcho` finish within their
+500 ms timeout and their results are dropped by the session check. The promoted
+flag is re-checked under the model lock before a result is applied, so an address
+that was demoted during the round is not updated by it.
 
 ## Status line
 
@@ -102,16 +108,40 @@ Hover text is only a report; it does not change monitoring state.
 
 ## Subnet changes
 
-The network ComboBox stays editable while monitoring. Selecting a detected
-network starts a sweep immediately; a manually typed CIDR is read by the next
-**Scan** or the next 15-second sweep. A selection is committed from
-`CBN_SELENDOK` through a posted message, so the edit field holds the CIDR before
-`startDiscovery` reads it. Cancelling the drop-down restores the pre-drop text.
-When the canonical subnet changes, `startDiscovery` uses `nextScanSession` to
-increment the scan session and clears the map, so results from a round started
-on the previous subnet are discarded. A sweep already in flight finishes on its
-old subnet; a queued sweep picks up the new one. **Stop** is no longer required
-to change networks.
+The committed subnet is the only value used by **Scan**, the discovery and
+active timers, the hover status line and the context menu. The editable ComboBox
+is input: its text is pending until an explicit action commits it. The committed
+state lives in `subnet.go` and is independent of the transient ComboBox text.
+
+Commit points:
+
+* choosing a drop-down entry: the CIDR is captured from the list at
+  `CBN_SELENDOK` and committed by a posted message; the edit text is never
+  parsed for this path;
+* **Scan**, **Monitor mode** and any context-menu command: the edit text, or a
+  ComboBox label that maps back to its CIDR, is parsed and committed first;
+* the 15 s discovery timer: a valid manually typed CIDR is committed before the
+  sweep; invalid or partial text is ignored so monitoring continues on the
+  committed subnet.
+
+A successful commit of a different canonical subnet:
+
+* increments the scan session;
+* clears the host map;
+* cancels rounds in flight and invalidates their completions and any queued
+  sweep;
+* rewrites the edit field with the canonical CIDR.
+
+Committing the same canonical subnet is a no-op: the map, session and rounds are
+kept. Selecting a network while monitoring starts a sweep immediately; selecting
+one while monitoring is off only commits it and asks for **Scan**.
+
+Cancelling the drop-down restores the pre-drop text unless a selection was
+committed while the list was open. In that case the committed CIDR wins, so
+cancelling can never restore the previous subnet. **Refresh** rebuilds the
+adapter list without changing the committed subnet, the session or the host map;
+it preserves pending text and maps a selected label back to its CIDR. **Stop** is
+not required to change networks.
 
 ## Known behaviour worth knowing during acceptance
 

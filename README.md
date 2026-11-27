@@ -57,10 +57,11 @@ stays editable while monitoring: choosing a different network starts a sweep
 immediately, while a manually typed CIDR takes effect on the next **Scan** or
 the next 15-second sweep.
 
-Selecting a dropdown entry writes that entry's CIDR into the edit field; the
-adapter label stays in the list. Cancelling the dropdown restores the text that
-was in the field before it opened, so a manual CIDR is not lost. A selection
-never leaves the edit field blank.
+Selecting a dropdown entry commits that entry's CIDR immediately; the adapter
+label stays in the list. Cancelling the dropdown restores the text that was in
+the field before it opened, unless a selection was committed while the list was
+open, in which case the selected CIDR stays. A selection never leaves the edit
+field blank.
 
 ## Network selector
 
@@ -92,10 +93,14 @@ Excluded by default:
 typed CIDR and sends no ICMP. Manual entry is always available, so an excluded
 virtual network can still be scanned when that is deliberate.
 
-The selection is committed from `CBN_SELENDOK` through a posted message after
-the native ComboBox has finished updating. The edit field is set to the CIDR
-with `SetWindowTextW`; `CB_SETCURSEL(-1)` is not used because it clears the edit
-control. `CBN_SELENDCANCEL` restores the pre-drop text.
+The committed subnet, not the ComboBox text, is what **Scan**, **Monitor mode**,
+the timers, the hover status and the context menu use. The text is pending
+input: choosing an entry captures its CIDR from the list and commits it, while
+**Scan**, **Monitor mode** and a context-menu action commit the typed text first
+(a selected label maps back to its CIDR). A subnet change cancels rounds in
+flight, invalidates their session, clears the map and rewrites the field with the
+canonical CIDR. The 15-second sweep commits a valid manually typed CIDR; invalid
+or partial text is ignored. Committing the same subnet changes nothing.
 
 ## IP cell context menu
 
@@ -200,13 +205,16 @@ GOOS=windows GOARCH=amd64 go test -c -o /dev/null .    # windows-only ABI tests 
 Unit tests cover subnet parsing, network adapter classification and filtering,
 `/24` derivation from adapter addresses, candidate ordering and de-duplication,
 the address map, grid geometry and hit testing, the promotion/demotion state
-machine, target selection per round, scan-session transitions and the monitoring
+machine, target selection per round, the authoritative committed subnet state
+(A-to-B-to-A switching, manual entry, **Scan** and **Monitor** commits,
+**Refresh**, drop-down cancellation and late old-subnet results), the monitoring
 cadence, IPv4 and port validation, client command construction, the context menu
 contract, and the Win32 struct layout checks that run on the Windows CI runner.
-The native ComboBox notification ordering is covered by the Windows acceptance
-checklist in [BUILD.md](BUILD.md). CI builds the executable on `windows-latest`,
-runs the tests on both Linux and Windows, and checks the PE header of the
-artifact.
+The native ComboBox notification ordering is still exercised by the Windows
+acceptance checklist in [BUILD.md](BUILD.md), but the commit path no longer
+depends on it: the selected CIDR is captured from the list and the committed
+state is authoritative. CI builds the executable on `windows-latest`, runs the
+tests on both Linux and Windows, and checks the PE header of the artifact.
 
 ## License
 

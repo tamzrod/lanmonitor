@@ -205,8 +205,15 @@ var (
 	// comboUpdating suppresses ComboBox notifications caused by our own edits.
 	comboUpdating bool
 
-	// comboTextBeforeDrop is restored when the user cancels the drop-down.
-	comboTextBeforeDrop string
+	// selectedNetwork is the CIDR captured when a drop-down entry is chosen.
+	// The commit handler uses it instead of the ComboBox text, which the native
+	// control may still be rewriting.
+	selectedNetwork string
+
+	// subnet is the authoritative subnet state. The ComboBox text is only
+	// pending input; every scan, monitor round, hover status and context-menu
+	// action reads the committed value.
+	subnet = newSubnetController()
 
 	aboutWindow uintptr
 	aboutLink   uintptr
@@ -240,11 +247,9 @@ var (
 	tokenMu     sync.Mutex
 	cancelToken chan struct{}
 
-	mapMu        sync.Mutex
-	targetSubnet string
-	scanSession  uint64
-	hostStates   [hostLast + 1]hostRecord
-	hostLocks    [hostLast + 1]sync.Mutex
+	// hostLocks serialises probes of the same address. The host map itself is
+	// owned by subnet.Model().
+	hostLocks [hostLast + 1]sync.Mutex
 )
 
 func winProc(dll *syscall.LazyDLL, name string) *syscall.LazyProc {
@@ -504,7 +509,15 @@ func handleContextCommand(cmd int) {
 	if !ok {
 		return
 	}
-	ip, err := hostAddress(controlText(subnetCombo), contextHost)
+	r := commitPendingSubnet()
+	if r.Err != nil {
+		showError("Enter a valid IPv4 /24 subnet before opening a host.")
+		return
+	}
+	if r.Changed && monitoring {
+		startDiscovery()
+	}
+	ip, err := hostAddress(r.Canonical, contextHost)
 	if err != nil {
 		showError("Enter a valid IPv4 /24 subnet before opening a host.")
 		return
@@ -774,8 +787,9 @@ func isCancelled(token chan struct{}) bool {
 	}
 }
 
-// startDiscovery runs one full sweep of the /24. It is used by the Scan button,
-// by the 15 s timer and by a queued request.
+// startDiscovery runs one full sweep of the committed /24. It is used by the
+// Scan button, by the 15 s timer and by a queued request. The subnet is never
+// read from the ComboBox here.
 func startDiscovery() {
 	if discoveryBusy {
 		if !discoveryQueued {
@@ -784,21 +798,12 @@ func startDiscovery() {
 		}
 		return
 	}
-	base, canonical, err := parseSubnet(controlText(subnetCombo))
-	if err != nil {
-		setStatus(err.Error())
+	base, canonical, session, ok := subnet.Model().Current()
+	if !ok {
+		setStatus(errSubnetSyntax.Error())
 		return
 	}
-
-	mapMu.Lock()
-	if next, changed := nextScanSession(targetSubnet, canonical, scanSession); changed {
-		hostStates = [hostLast + 1]hostRecord{}
-		targetSubnet = canonical
-		scanSession = next
-	}
-	ids := targets(true, hostStates[:])
-	session := scanSession
-	mapMu.Unlock()
+	ids := subnet.Model().Targets(true)
 
 	discoveryBusy = true
 	discoverySeq++
@@ -808,26 +813,18 @@ func startDiscovery() {
 	go runRound(base, ids, true, discoverySeq, session, currentToken())
 }
 
-// startActive probes the promoted hosts only. It is driven by the 1 s timer and
-// does nothing while monitoring is off or a previous active round still runs.
+// startActive probes the promoted hosts of the committed subnet only. It is
+// driven by the 1 s timer and does nothing while monitoring is off or a
+// previous active round still runs.
 func startActive() {
 	if !monitoring || activeBusy {
 		return
 	}
-	base, canonical, err := parseSubnet(controlText(subnetCombo))
-	if err != nil {
+	base, _, session, ok := subnet.Model().Current()
+	if !ok {
 		return
 	}
-
-	mapMu.Lock()
-	if canonical != targetSubnet {
-		mapMu.Unlock()
-		return
-	}
-	ids := targets(false, hostStates[:])
-	session := scanSession
-	mapMu.Unlock()
-
+	ids := subnet.Model().Targets(false)
 	if len(ids) == 0 {
 		return
 	}
@@ -883,11 +880,7 @@ func probe(base [4]byte, i int, discovery bool, session uint64, token chan struc
 	responded, rttMS := p.ping(hostAddr(base, i), pingTimeoutMS)
 	p.close()
 
-	mapMu.Lock()
-	if session == scanSession && (discovery || hostStates[i].promoted) {
-		hostStates[i].observe(discovery, responded, rttMS)
-	}
-	mapMu.Unlock()
+	subnet.Model().Observe(session, i, discovery, responded, rttMS)
 
 	call(user32, "PostMessageW", mainWindow, uintptr(wmRoundProgress), uintptr(0), uintptr(0))
 }
@@ -926,9 +919,7 @@ func paintWindow() {
 		return brushes[0]
 	}
 
-	mapMu.Lock()
-	snapshot := hostStates
-	mapMu.Unlock()
+	snapshot := subnet.Model().Snapshot()
 
 	for i := hostFirst; i <= hostLast; i++ {
 		st := snapshot[i].state
@@ -951,14 +942,13 @@ func handleMouseMove(l uintptr) {
 	if !ok {
 		return
 	}
-	mapMu.Lock()
-	rec, subnet := hostStates[i], targetSubnet
-	mapMu.Unlock()
-	setStatus(formatStatus(subnet, i, rec))
+	_, canonical, _, _ := subnet.Model().Current()
+	setStatus(formatStatus(canonical, i, subnet.Model().Host(i)))
 }
 
-// setMonitoring applies the Monitor mode check box. Enabling it starts a sweep
-// immediately and arms the 15 s and 1 s timers; disabling it cancels rounds.
+// setMonitoring applies the Monitor mode check box. Enabling it commits the
+// pending subnet, starts a sweep immediately and arms the 15 s and 1 s timers;
+// disabling it cancels rounds.
 func setMonitoring(hwnd uintptr) {
 	monitoring = call(user32, "SendMessageW", monitorCheck, uintptr(bmGetCheck), uintptr(0), uintptr(0)) == bstChecked
 	call(user32, "KillTimer", hwnd, uintptr(discoveryTimerID))
@@ -968,6 +958,13 @@ func setMonitoring(hwnd uintptr) {
 		discoveryQueued = false
 		cancelRounds()
 		setStatus("Monitoring off")
+		return
+	}
+
+	if r := commitPendingSubnet(); r.Err != nil {
+		monitoring = false
+		call(user32, "SendMessageW", monitorCheck, uintptr(bmSetCheck), uintptr(0), uintptr(0))
+		setStatus(r.Err.Error())
 		return
 	}
 
@@ -1012,17 +1009,24 @@ func handleRoundDone(hwnd, code, seq uintptr) {
 	}
 
 	call(user32, "InvalidateRect", hwnd, unsafe.Pointer(nil), uintptr(0))
-	if cancelled || kind != roundDiscovery {
+	if kind != roundDiscovery {
+		return
+	}
+
+	// A sweep queued after Stop or after a cancelled round is an explicit Scan
+	// request, so it still runs. Every cancellation path clears the queue first,
+	// so a sweep queued before Stop is never started by this check.
+	if discoveryQueued {
+		discoveryQueued = false
+		startDiscovery()
+		return
+	}
+	if cancelled {
 		return
 	}
 
 	if probes, failures := discoveryProbes.Load(), discoveryFailures.Load(); probes > 0 && failures >= probes {
 		setStatus("Discovery failed - could not open an ICMP handle")
-		return
-	}
-	if discoveryQueued {
-		discoveryQueued = false
-		startDiscovery()
 		return
 	}
 	if monitoring {
@@ -1046,21 +1050,26 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 	case wmCommand:
 		switch int(w & 0xffff) {
 		case idScan:
-			startDiscovery()
+			if r := commitPendingSubnet(); r.Err != nil {
+				setStatus(r.Err.Error())
+			} else {
+				startDiscovery()
+			}
 		case idStop:
 			stopAll(hwnd)
 		case idMonitor:
 			setMonitoring(hwnd)
 		case idSubnet:
 			if !comboUpdating {
-				// CBN_SELCHANGE arrives before the combo finishes updating its
-				// edit field. Commit on CBN_SELENDOK and restore on
-				// CBN_SELENDCANCEL through posted messages so native processing
-				// completes first.
+				// The selected CIDR is captured here, while the control still
+				// knows its list index. The posted commit then runs after the
+				// native control has finished, and never reads the edit text.
 				switch uint32(w) >> 16 {
 				case cbnDropdown:
-					comboTextBeforeDrop = controlText(subnetCombo)
+					selectedNetwork = ""
+					subnet.BeginDrop(controlText(subnetCombo))
 				case cbnSelEndOk:
+					selectedNetwork = selectedNetworkCIDR()
 					call(user32, "PostMessageW", hwnd, uintptr(wmComboCommit), uintptr(0), uintptr(0))
 				case cbnSelEndCancel:
 					call(user32, "PostMessageW", hwnd, uintptr(wmComboRestore), uintptr(0), uintptr(0))
@@ -1078,6 +1087,7 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 		}
 		switch w {
 		case uintptr(discoveryTimerID):
+			syncPendingSubnet()
 			startDiscovery()
 		case uintptr(activeTimerID):
 			startActive()
@@ -1096,50 +1106,55 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 		handleRoundDone(hwnd, w, l)
 		return 0
 	case wmComboCommit:
-		selectNetwork()
+		commitSelectedNetwork()
 		return 0
 	case wmComboRestore:
-		restoreNetworkText()
+		restoreAfterDrop()
 		return 0
 	}
 	return call(user32, "DefWindowProcW", hwnd, m, w, l)
 }
 
-// refreshNetworkList rebuilds the ComboBox items. A manually typed CIDR is
-// kept when preserve is true; otherwise the best detected network is filled in.
+// refreshNetworkList rebuilds the ComboBox items. With preserve, the pending
+// edit text (including a manually typed CIDR) is kept and the committed subnet
+// is untouched. Without preserve, the first detected network becomes the
+// committed default. Detection never sends ICMP.
 func refreshNetworkList(preserve bool) {
-	current := strings.TrimSpace(controlText(subnetCombo))
+	subnet.SetText(resolveSubnetInput(controlText(subnetCombo), networkList))
 	networkList = detectedNetworks()
+	selectedNetwork = ""
+
 	comboUpdating = true
-	// CB_RESETCONTENT clears the items, the selection and the edit text. Do not
-	// follow it with CB_SETCURSEL(-1): that clears the edit control again and can
-	// erase the text set below.
 	call(user32, "SendMessageW", subnetCombo, uintptr(cbResetContent), uintptr(0), uintptr(0))
 	for _, c := range networkList {
 		call(user32, "SendMessageW", subnetCombo, uintptr(cbAddString), uintptr(0), c.Label())
 	}
 	comboUpdating = false
-	switch {
-	case preserve && current != "":
-		setComboCIDR(current)
-	case len(networkList) > 0:
-		setComboCIDR(networkList[0].CIDR)
+
+	if !preserve {
+		if len(networkList) > 0 {
+			applyCommit(subnet.Select(networkList[0].CIDR))
+		} else {
+			subnet.SetText("")
+			setComboText("")
+		}
+		return
 	}
+
+	text := subnet.Refresh()
+	if strings.TrimSpace(text) == "" && len(networkList) > 0 {
+		text = networkList[0].CIDR
+		subnet.SetText(text)
+	}
+	setComboText(text)
 }
 
-// setComboCIDR replaces the edit text without changing the list selection.
-// CB_SETCURSEL(-1) is deliberately not used: it clears the edit control and can
-// override this text when called during a selection notification.
-func setComboCIDR(cidr string) {
+// setComboText replaces the edit text without changing the list selection.
+// Notifications caused by this programmatic edit are suppressed.
+func setComboText(text string) {
 	comboUpdating = true
-	call(user32, "SetWindowTextW", subnetCombo, cidr)
+	call(user32, "SetWindowTextW", subnetCombo, text)
 	comboUpdating = false
-}
-
-func restoreNetworkText() {
-	if comboTextBeforeDrop != "" {
-		setComboCIDR(comboTextBeforeDrop)
-	}
 }
 
 func refreshNetworks() {
@@ -1151,19 +1166,91 @@ func refreshNetworks() {
 	setStatus(fmt.Sprintf("Network list refreshed - %d network(s)", len(networkList)))
 }
 
-func selectNetwork() {
+// selectedNetworkCIDR reads the list entry the ComboBox settled on. It runs
+// from the CBN_SELENDOK notification, before the posted commit, so the commit
+// never depends on the transient edit text.
+func selectedNetworkCIDR() string {
 	idx := int(call(user32, "SendMessageW", subnetCombo, uintptr(cbGetCurSel), uintptr(0), uintptr(0)))
 	if idx < 0 || idx >= len(networkList) {
-		restoreNetworkText()
+		return ""
+	}
+	return networkList[idx].CIDR
+}
+
+// commitSelectedNetwork applies a drop-down choice captured at CBN_SELENDOK.
+func commitSelectedNetwork() {
+	cidr := selectedNetwork
+	selectedNetwork = ""
+	if cidr == "" {
+		restoreAfterDrop()
 		return
 	}
-	cidr := networkList[idx].CIDR
-	setComboCIDR(cidr)
+
+	r := subnet.Select(cidr)
+	applyCommit(r)
+	if r.Err != nil {
+		restoreAfterDrop()
+		setStatus(r.Err.Error())
+		return
+	}
 	if monitoring {
 		startDiscovery()
 		return
 	}
-	setStatus("Selected " + cidr + " - press Scan")
+	setStatus("Selected " + r.Canonical + " - press Scan")
+}
+
+// restoreAfterDrop handles CBN_SELENDCANCEL. If a selection was committed while
+// the list was open, the committed CIDR wins; otherwise the pre-drop text
+// returns. The committed subnet itself is never changed here.
+func restoreAfterDrop() {
+	setComboText(subnet.CancelDrop())
+}
+
+// commitPendingSubnet makes the current edit text authoritative before Scan,
+// Monitor mode or a context-menu action. A subnet change discards the old map
+// and every round that belongs to it.
+func commitPendingSubnet() commitResult {
+	subnet.SetText(resolveSubnetInput(controlText(subnetCombo), networkList))
+	r := subnet.CommitPending()
+	applyCommit(r)
+	return r
+}
+
+// syncPendingSubnet lets a valid manually typed CIDR take effect on the next
+// 15 s sweep without stopping monitoring. Invalid or partial text is ignored
+// and the committed subnet keeps being monitored.
+func syncPendingSubnet() {
+	subnet.SetText(resolveSubnetInput(controlText(subnetCombo), networkList))
+	r, ok := subnet.CommitPendingIfValid()
+	if !ok {
+		return
+	}
+	applyCommit(r)
+}
+
+// applyCommit makes a successful commit visible and, when the subnet changed,
+// discards the map's rounds. A failed commit leaves the edit text alone so the
+// user can correct it.
+func applyCommit(r commitResult) {
+	if r.Err != nil {
+		return
+	}
+	setComboText(subnet.Text())
+	if r.Changed {
+		applySubnetChange()
+	}
+}
+
+// applySubnetChange cancels the rounds of the previous subnet and invalidates
+// their completions. The host map was already cleared by the model.
+func applySubnetChange() {
+	cancelRounds()
+	discoverySeq++
+	activeSeq++
+	discoveryBusy = false
+	activeBusy = false
+	discoveryQueued = false
 }
 
 func main() {

@@ -48,11 +48,15 @@ and `INITCOMMONCONTROLSEX`.
 Unit tests cover subnet parsing, network adapter classification and filtering,
 `/24` derivation from adapter addresses, candidate ordering and de-duplication,
 the address map, grid geometry and hit testing, the promotion/demotion state
-machine, target selection per round, scan-session transitions and the monitoring
-cadence, IPv4 and port validation, command construction for every context menu
-action, the exact context menu contract, and the About identity. Native ComboBox
-notification ordering is checked by the Windows acceptance checklist because it
-depends on the Windows control implementation.
+machine, target selection per round, the authoritative committed subnet state,
+the monitoring cadence, IPv4 and port validation, command construction for every
+context menu action, the exact context menu contract, and the About identity.
+The committed-subnet tests cover A-to-B-to-A switching, manual entry, **Scan**
+and **Monitor** commits, **Refresh**, drop-down cancellation, and late results
+from an old subnet. Native ComboBox notification ordering is still exercised by
+the Windows acceptance checklist; the commit path no longer depends on it because
+the selected CIDR is captured from the list and the committed state is the only
+value the scanner reads.
 
 ## Verify the artifact
 
@@ -131,6 +135,20 @@ Network selector
 - After selecting an entry, click the edit field and type a different CIDR:
   manual editing still works. **Scan** and the right-click actions use the
   displayed CIDR.
+- Select an entry and immediately press **Scan**: the sweep targets the selected
+  CIDR, not the previous one.
+- Select an entry and immediately tick **Monitor mode**: the first sweep targets
+  the selected CIDR.
+- Select A, then B, then A again: each switch clears the map, and no result from
+  the earlier A or B round appears in the map.
+- Select an entry, then cancel the drop-down with Esc or by clicking outside:
+  the edit field keeps the selected CIDR, and **Scan** and **Monitor mode** use
+  it. Cancelling without a selection restores a manually typed CIDR.
+- Type a CIDR while monitoring and wait for the 15-second sweep: the sweep uses
+  the typed CIDR. Partial or invalid text does not stop monitoring.
+- Hover a cell after a selection: the status line names the committed CIDR.
+- Right-click a cell after typing a CIDR but before **Scan**: the action uses the
+  typed CIDR.
 - Switch from one network to another: the previous colours clear, and results
   from the old sweep do not appear in the new map.
 - Type a different CIDR while monitoring: the next **Scan** or 15-second sweep
@@ -213,6 +231,16 @@ The network-selector correction adds tests for adapter classification, `/24`
 derivation, filtering, ordering, duplicate preference and labels. Those tests,
 the existing Version 3 tests and the Windows ABI compile all pass.
 
+The committed-subnet correction adds `subnet.go`, which owns the authoritative
+subnet and the host map, and `subnet_test.go`, which covers A-to-B-to-A
+switching, manual entry, **Scan** and **Monitor** commits, **Refresh**,
+drop-down cancellation (including cancellation after a committed selection), and
+late results from an old subnet. The ComboBox text is pending input only; every
+scan, monitor round, hover status and context-menu action reads the committed
+subnet. A change cancels the old rounds, invalidates their session and clears the
+host map. The current candidate's commit and SHA256 are recorded in the v3
+release notes and the final release report.
+
 No Windows runtime or GUI acceptance was performed for v3. The pre-release
 exists so that this checklist can be run on real Windows hardware. The v2 Wine
 verification below is historical and does not cover the new v3 UI.
@@ -229,9 +257,23 @@ The first network-selector correction was built from commit
 
 The ComboBox notification correction republished the same `v3` prerelease from
 the corrected commit. It commits a selected entry from `CBN_SELENDOK` through a
-posted message and removes `CB_SETCURSEL(-1)`, which cleared the edit field. No
-`v4` tag or release was created. The current commit and checksum are recorded in
-the v3 release notes and the final release report.
+posted message and removes `CB_SETCURSEL(-1)`, which cleared the edit field. It
+was built from commit `561a6eff961dda5d4a3695885b0429007c440cce` with
+`lanmonitor-v3.exe` SHA256
+`302bb13e32de8c298460e5cfaff5b210c24001f49b28893e6db69ca445b42e33`.
+
+The committed-subnet correction replaces the notification-driven selector with
+an authoritative committed subnet in `subnet.go`. A selected CIDR is captured
+from the list and committed independently of the transient edit text; **Scan**,
+**Monitor mode**, the 15-second sweep, hover and the context menu all read the
+committed value. A subnet change cancels old rounds, invalidates their scan
+session and clears the host map. Cancelling a drop-down after a committed
+selection keeps the selected subnet, and cancelling without a selection restores
+the pre-drop text. Regression tests cover A-to-B-to-A switching, manual entry,
+**Scan**, **Monitor**, **Refresh**, drop-down cancellation and late old-subnet
+results. The `v3` tag is moved to this correction and both assets are replaced.
+No `v4` tag or release was created. The current commit and checksum are recorded
+in the v3 release notes and the final release report.
 
 ## Verification performed for v2 (historical)
 

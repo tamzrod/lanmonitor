@@ -251,15 +251,6 @@ func TestTargets(t *testing.T) {
 	}
 }
 
-func TestNextScanSession(t *testing.T) {
-	if got, changed := nextScanSession("192.168.1.0/24", "192.168.1.0/24", 7); got != 7 || changed {
-		t.Errorf("same subnet = (%d, %v), want (7, false)", got, changed)
-	}
-	if got, changed := nextScanSession("192.168.1.0/24", "10.0.0.0/24", 7); got != 8 || !changed {
-		t.Errorf("changed subnet = (%d, %v), want (8, true)", got, changed)
-	}
-}
-
 func TestFormatStatus(t *testing.T) {
 	var rec hostRecord
 	rec.observe(true, true, 12)

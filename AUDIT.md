@@ -3,9 +3,11 @@
 ## Scope
 
 This audit covers the Version 3 source on `feature/version-3`, including the
-Windows-specific `main_windows.go`, the platform-independent `logic.go` and
-`networks.go`, the tests, the CI workflow and the release artifact checks. It
-also covers the network-selector correction that republished the v3 prerelease.
+Windows-specific `main_windows.go`, the platform-independent `logic.go`,
+`networks.go` and `subnet.go`, the tests, the CI workflow and the release
+artifact checks. It also covers the network-selector correction that republished
+the v3 prerelease and the committed-subnet correction that replaces the
+notification-driven selector.
 No Windows runtime or GUI acceptance was performed for Version 3; that is the
 purpose of the pre-release.
 
@@ -134,26 +136,43 @@ no DLL entry point and no new ABI structure.
 * The ComboBox is populated with `CB_RESETCONTENT` and `CB_ADDSTRING`. The edit
   text is set with `SetWindowTextW`; `controlText` reads it with
   `GetWindowTextW`. **Refresh** captures and restores a manually typed CIDR.
-* Selection is not committed from `CBN_SELCHANGE`. Windows sends that
-  notification before the ComboBox has finished updating its edit field, and
-  calling `CB_SETCURSEL(-1)` there clears the field and can override the text
-  written by the handler. Instead, `CBN_DROPDOWN` saves the pre-drop text,
-  `CBN_SELENDOK` posts `wmComboCommit`, and `CBN_SELENDCANCEL` posts
-  `wmComboRestore`. The posted handlers run after native processing and set the
-  edit field with `SetWindowTextW` only. `CB_SETCURSEL(-1)` is no longer used.
-* `wmComboCommit` reads `CB_GETCURSEL`, writes the selected CIDR, and starts a
-  discovery sweep if monitoring is on. `wmComboRestore` restores the text saved
-  when the drop-down opened, so cancelling preserves a manual CIDR.
-* Manually typed CIDRs are consumed by **Scan** and the 15-second timer through
-  `parseSubnet`. The context menu uses the same edit text through `hostAddress`.
-* `nextScanSession` increments the scan session when the canonical subnet
-  changes. Results carry the session captured at round start, and `probe`
-  discards any result whose session no longer matches, so a sweep from the old
-  subnet cannot populate the new map.
+* The editable ComboBox is input only. `subnet.go` owns the authoritative
+  committed subnet (`subnetModel`) and the host map. **Scan**, the 15 s and 1 s
+  timers, the hover status and the context menu read the committed value; no scan
+  path parses the transient edit text.
+* A drop-down choice captures its CIDR from `networkList` at `CBN_SELENDOK` and
+  posts `wmComboCommit`. The commit uses that captured CIDR, not `CB_GETCURSEL`
+  after native processing and not the edit text, so a control that is still
+  rewriting its field cannot change the result.
+* `CBN_DROPDOWN` records the pre-drop text and the current session.
+  `wmComboRestore` restores the pre-drop text only when no selection was
+  committed while the list was open; otherwise it shows the committed CIDR. This
+  fixes the reported case where the list showed the new subnet but
+  `CBN_SELENDCANCEL` restored the old text and **Scan** or **Monitor mode**
+  reverted to the previous subnet.
+* **Scan**, **Monitor mode** and any context-menu command call
+  `commitPendingSubnet`, which parses the edit text (or maps a ComboBox label back
+  to its CIDR) and commits it before doing any work. Invalid text is reported and
+  leaves the committed subnet unchanged.
+* The 15 s sweep calls `syncPendingSubnet`, which commits a valid manually typed
+  CIDR; invalid or partial text is ignored and monitoring continues on the
+  committed subnet.
+* `subnetModel.Commit` increments the session and clears the host map only when
+  the canonical subnet changes. Committing the same subnet is a no-op.
+  `applySubnetChange` closes the cancellation token, invalidates both sequence
+  numbers and clears the busy and queued flags, so an old round cannot write into
+  the new map or clear the busy state of the round that replaced it.
+* `subnetModel.Observe` applies a result only when the round's session matches
+  and, for an active round, the host is still promoted.
+* **Refresh** rebuilds the adapter list without committing, changing the session
+  or touching the host map; it preserves pending text and maps a selected label
+  to its CIDR. **Stop** remains the explicit cancellation path.
 * Tests cover adapter classification, exclusion, `/24` derivation from `/24`,
   `/32` and shorter masks, ordering, duplicate preference, label text, the real
-  `detectedNetworks` output and the scan-session transition. No shell or command
-  construction is involved.
+  `detectedNetworks` output and the committed subnet: A-to-B-to-A switching,
+  manual entry, **Scan** and **Monitor** commits, **Refresh**, cancellation
+  (including cancellation after a committed selection) and late old-subnet
+  results. No shell or command construction is involved.
 * Manual entry can still target a network excluded from the list. Exclusion is a
   default list policy, not a security boundary.
 
@@ -181,16 +200,23 @@ GOOS=windows GOARCH=amd64 go test -c -o /dev/null .
 The binary was checked for PE32+ AMD64, the Windows GUI subsystem, a
 `kernel32.dll`-only import table, size and SHA256. The corrections added tests
 for network classification, `/24` derivation, filtering, ordering, duplicate
-preference, labels and scan-session transitions; they pass alongside the
-existing Version 3 tests. The ComboBox notification ordering fix is covered by
-the Windows acceptance checklist because it depends on native control
-behaviour. The results are recorded in the release notes and the release
-evidence.
+preference, labels and the committed subnet (A-to-B-to-A switching, manual
+entry, **Scan** and **Monitor** commits, **Refresh**, cancellation and late
+old-subnet results); they pass alongside the existing Version 3 tests. Native
+ComboBox notification ordering is still exercised by the Windows acceptance
+checklist, but the commit path no longer depends on it: the selected CIDR is
+captured from the list and the committed state is authoritative. The results are
+recorded in the release notes and the release evidence.
 
 ## Residual risks and limitations
 
 * Windows GUI runtime acceptance, DPI behaviour and interaction with real clients
   are not performed. The pre-release is for that acceptance.
+* The committed-subnet model is unit-tested, but native ComboBox notifications
+  still need real Windows acceptance. The design no longer depends on their
+  ordering: **Scan**, **Monitor mode** and the context menu commit the visible
+  text or the captured list CIDR, and the committed state is the only value the
+  scanner reads.
 * Network detection uses adapter friendly names. A VPN or physical adapter with
   an unusual name may be classified as `Other`, and a virtual adapter whose name
   does not match the exclusion list may appear. Manual CIDR entry remains the
