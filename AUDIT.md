@@ -23,7 +23,10 @@ purpose of the pre-release.
 * The original v3 prerelease commit was
   `5d9cd8ebec408566f9dce20189dfabde7bf1f0af`; its `lanmonitor-v3.exe` SHA256 was
   `5411833641483be162ab457eeecced5331ddc0ee14e46fd0e90f0582858a0d90`.
-  The network-selector correction republishes the same `v3` tag; no `v4` tag or
+* The first network-selector correction was commit
+  `41e169bfbc73389ee33e6799c424c6a9bd55193c`; its `lanmonitor-v3.exe` SHA256 was
+  `f89559c1fde94d10519414f919df0f674ac4d7e9d92ea60a90939af9f843e536`.
+  The ComboBox notification fix republishes the same `v3` tag; no `v4` tag or
   release was created.
 
 ## Win32 API inventory
@@ -131,12 +134,26 @@ no DLL entry point and no new ABI structure.
 * The ComboBox is populated with `CB_RESETCONTENT` and `CB_ADDSTRING`. The edit
   text is set with `SetWindowTextW`; `controlText` reads it with
   `GetWindowTextW`. **Refresh** captures and restores a manually typed CIDR.
-* `CBN_SELCHANGE` sets the edit text to the selected candidate CIDR and starts a
-  discovery sweep if monitoring is on. Manually typed CIDRs are consumed by
-  **Scan** and the 15-second timer through `parseSubnet`.
+* Selection is not committed from `CBN_SELCHANGE`. Windows sends that
+  notification before the ComboBox has finished updating its edit field, and
+  calling `CB_SETCURSEL(-1)` there clears the field and can override the text
+  written by the handler. Instead, `CBN_DROPDOWN` saves the pre-drop text,
+  `CBN_SELENDOK` posts `wmComboCommit`, and `CBN_SELENDCANCEL` posts
+  `wmComboRestore`. The posted handlers run after native processing and set the
+  edit field with `SetWindowTextW` only. `CB_SETCURSEL(-1)` is no longer used.
+* `wmComboCommit` reads `CB_GETCURSEL`, writes the selected CIDR, and starts a
+  discovery sweep if monitoring is on. `wmComboRestore` restores the text saved
+  when the drop-down opened, so cancelling preserves a manual CIDR.
+* Manually typed CIDRs are consumed by **Scan** and the 15-second timer through
+  `parseSubnet`. The context menu uses the same edit text through `hostAddress`.
+* `nextScanSession` increments the scan session when the canonical subnet
+  changes. Results carry the session captured at round start, and `probe`
+  discards any result whose session no longer matches, so a sweep from the old
+  subnet cannot populate the new map.
 * Tests cover adapter classification, exclusion, `/24` derivation from `/24`,
-  `/32` and shorter masks, ordering, duplicate preference, label text and the
-  real `detectedNetworks` output. No shell or command construction is involved.
+  `/32` and shorter masks, ordering, duplicate preference, label text, the real
+  `detectedNetworks` output and the scan-session transition. No shell or command
+  construction is involved.
 * Manual entry can still target a network excluded from the list. Exclusion is a
   default list policy, not a security boundary.
 
@@ -162,10 +179,13 @@ GOOS=windows GOARCH=amd64 go test -c -o /dev/null .
 ```
 
 The binary was checked for PE32+ AMD64, the Windows GUI subsystem, a
-`kernel32.dll`-only import table, size and SHA256. The correction added tests
+`kernel32.dll`-only import table, size and SHA256. The corrections added tests
 for network classification, `/24` derivation, filtering, ordering, duplicate
-preference and labels; they pass alongside the existing Version 3 tests. The
-results are recorded in the release notes and the release evidence.
+preference, labels and scan-session transitions; they pass alongside the
+existing Version 3 tests. The ComboBox notification ordering fix is covered by
+the Windows acceptance checklist because it depends on native control
+behaviour. The results are recorded in the release notes and the release
+evidence.
 
 ## Residual risks and limitations
 

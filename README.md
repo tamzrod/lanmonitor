@@ -57,13 +57,19 @@ stays editable while monitoring: choosing a different network starts a sweep
 immediately, while a manually typed CIDR takes effect on the next **Scan** or
 the next 15-second sweep.
 
+Selecting a dropdown entry writes that entry's CIDR into the edit field; the
+adapter label stays in the list. Cancelling the dropdown restores the text that
+was in the field before it opened, so a manual CIDR is not lost. A selection
+never leaves the edit field blank.
+
 ## Network selector
 
 The network input is an editable ComboBox, not a locked text box. At startup it
 enumerates the active IPv4 adapters and lists one entry per `/24`. The `/24` is
 the one that contains the adapter address, so a VPN `/32` still yields a usable
 `/24`. Duplicate networks are removed, and the list is sorted Ethernet, Wi-Fi,
-VPN, then other adapters. The first entry is selected automatically.
+VPN, then other adapters. The first entry is filled into the edit field
+automatically.
 
 Included by default:
 
@@ -85,6 +91,11 @@ Excluded by default:
 **Refresh** rebuilds the list from the current adapters. It keeps a manually
 typed CIDR and sends no ICMP. Manual entry is always available, so an excluded
 virtual network can still be scanned when that is deliberate.
+
+The selection is committed from `CBN_SELENDOK` through a posted message after
+the native ComboBox has finished updating. The edit field is set to the CIDR
+with `SetWindowTextW`; `CB_SETCURSEL(-1)` is not used because it clears the edit
+control. `CBN_SELENDCANCEL` restores the pre-drop text.
 
 ## IP cell context menu
 
@@ -189,11 +200,13 @@ GOOS=windows GOARCH=amd64 go test -c -o /dev/null .    # windows-only ABI tests 
 Unit tests cover subnet parsing, network adapter classification and filtering,
 `/24` derivation from adapter addresses, candidate ordering and de-duplication,
 the address map, grid geometry and hit testing, the promotion/demotion state
-machine, target selection per round and the monitoring cadence, IPv4 and port
-validation, client command construction, the context menu contract, and the
-Win32 struct layout checks that run on the Windows CI runner. CI builds the
-executable on `windows-latest`, runs the tests on both Linux and Windows, and
-checks the PE header of the artifact.
+machine, target selection per round, scan-session transitions and the monitoring
+cadence, IPv4 and port validation, client command construction, the context menu
+contract, and the Win32 struct layout checks that run on the Windows CI runner.
+The native ComboBox notification ordering is covered by the Windows acceptance
+checklist in [BUILD.md](BUILD.md). CI builds the executable on `windows-latest`,
+runs the tests on both Linux and Windows, and checks the PE header of the
+artifact.
 
 ## License
 
