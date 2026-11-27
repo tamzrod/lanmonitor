@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and vet (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-ed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet (host)
+        run: go vet ./...
+
+      - name: Vet (windows/amd64)
+        run: GOOS=windows GOARCH=amd64 go vet ./...
+
+      - name: Unit tests with race detector
+        run: go test -race ./...
+
+  build:
+    name: Build lanmonitor.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Unit tests (windows)
+        run: go test ./...
+
+      - name: Build portable executable
+        shell: bash
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -H=windowsgui" -o lanmonitor.exe .
+
+      - name: Verify executable
+        shell: bash
+        run: |
+          ls -l lanmonitor.exe
+          sha256sum lanmonitor.exe
+          go version -m lanmonitor.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lanmonitor-windows-amd64
+          path: lanmonitor.exe
+          if-no-files-found: error
