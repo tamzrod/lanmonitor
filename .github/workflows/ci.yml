@@ -2,13 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feature/**", "release/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  BINARY: lanmonitor-v2.exe
 
 jobs:
   test:
@@ -41,7 +44,7 @@ jobs:
         run: go test -race ./...
 
   build:
-    name: Build lanmonitor.exe
+    name: Build lanmonitor-v2.exe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,17 +59,35 @@ jobs:
 
       - name: Build portable executable
         shell: bash
-        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -H=windowsgui" -o lanmonitor.exe .
+        run: |
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w -H=windowsgui" -o "$BINARY" .
+          ls -l "$BINARY"
 
       - name: Verify executable
         shell: bash
         run: |
-          ls -l lanmonitor.exe
-          sha256sum lanmonitor.exe
-          go version -m lanmonitor.exe
+          sha256sum "$BINARY" | tee SHA256SUMS.txt
+          go version -m "$BINARY"
+
+      - name: Check PE header
+        shell: pwsh
+        run: |
+          $path = Join-Path "$env:GITHUB_WORKSPACE" "$env:BINARY"
+          $bytes = [IO.File]::ReadAllBytes($path)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          $magic = [BitConverter]::ToUInt16($bytes, $pe + 24)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+          "machine=0x{0:x4} magic=0x{1:x3} subsystem={2}" -f $machine, $magic, $subsystem
+          if ($machine -ne 0x8664) { throw "expected an amd64 image, got machine 0x{0:x4}" -f $machine }
+          if ($magic -ne 0x20b) { throw "expected PE32+, got magic 0x{0:x3}" -f $magic }
+          if ($subsystem -ne 2) { throw "expected the Windows GUI subsystem, got $subsystem" }
 
       - uses: actions/upload-artifact@v4
         with:
           name: lanmonitor-windows-amd64
-          path: lanmonitor.exe
+          path: |
+            ${{ env.BINARY }}
+            SHA256SUMS.txt
           if-no-files-found: error
