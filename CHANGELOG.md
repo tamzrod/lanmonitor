@@ -15,9 +15,14 @@ unchanged.
   Address.
 * **Custom Port** dialog for HTTP, HTTPS or SSH on a validated port from 1 to
   65535.
+* Editable network ComboBox with automatic `/24` detection, a **Refresh** button
+  and manual CIDR entry.
+* Adapter detection includes physical Ethernet, Wi-Fi and VPN adapters such as
+  WireGuard, OpenVPN and Tailscale.
 * Validated IPv4 and port parsing, command construction tests, and graceful
   messages when a client or default browser is unavailable.
-* `AUDIT.md`, describing the Win32 API and unsafe-pointer review.
+* `AUDIT.md`, describing the Win32 API, unsafe-pointer and network-selector
+  review.
 
 ### Changed
 
@@ -25,6 +30,30 @@ unchanged.
 * Client commands pass each argument directly to the executable. No command
   shell or `cmd.exe` is used.
 * The window accounts for the new Help menu when sizing the client area.
+* The network input is an editable ComboBox instead of a disabled subnet box. It
+  stays editable during discovery and monitoring.
+
+### Fixed
+
+* Replaced the locked network input with an editable ComboBox.
+* Automatic detection lists active physical Ethernet, Wi-Fi and VPN `/24`
+  networks, including WireGuard, OpenVPN and Tailscale.
+* Docker, WSL, Hyper-V virtual switches, VMware, VirtualBox, loopback, Wi-Fi
+  Direct, hosted-network and common container adapters are excluded by default.
+* **Refresh** rebuilds the network list without clearing a manually typed CIDR.
+* Selecting a network while monitoring starts a sweep; manual CIDR entry is used
+  by the next **Scan** or 15-second sweep.
+* Adapter detection performs no ICMP and preserves startup silence.
+
+### Release correction
+
+* The v3 prerelease was republished from the corrected network-selector commit.
+* Previous v3 prerelease commit:
+  `5d9cd8ebec408566f9dce20189dfabde7bf1f0af`.
+* Previous `lanmonitor-v3.exe` SHA256:
+  `5411833641483be162ab457eeecced5331ddc0ee14e46fd0e90f0582858a0d90`.
+* No v4 tag or release was created; v3 remains a pre-release pending Windows
+  acceptance.
 
 ### Security
 

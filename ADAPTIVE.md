@@ -93,16 +93,22 @@ an address that was demoted during the round is not updated by it.
 | `Monitoring - discovery complete, next sweep in 15 s` | Sweep finished, monitoring on |
 | `Discovery failed - could not open an ICMP handle` | Every probe in the sweep failed to get an ICMP handle |
 | `Stopped` | **Stop** pressed |
+| `Network list refreshed - <n> network(s)` | **Refresh** rebuilt the adapter list |
+| `No IPv4 networks detected - type a /24 manually` | No eligible adapter network was found |
+| `Selected <subnet> - press Scan` | A dropdown entry was chosen while monitoring was off |
 | `<subnet> \| Host .<n> \| <state> \| <rtt> ms \| Promoted` | Hover over a cell |
 
 Hover text is only a report; it does not change monitoring state.
 
 ## Subnet changes
 
-The subnet box is disabled while monitoring, so the map cannot be reset
-underneath a running sweep. To scan a different subnet, press **Stop** (or untick
-**Monitor mode**), edit the address and press **Scan**. The session counter
-increments and the map is cleared.
+The network ComboBox stays editable while monitoring. Selecting a detected
+network starts a sweep immediately; a manually typed CIDR is read by the next
+**Scan** or the next 15-second sweep. When the canonical subnet changes,
+`startDiscovery` increments the scan session and clears the map, so results from
+a round started on the previous subnet are discarded. A sweep already in flight
+finishes on its old subnet; a queued sweep picks up the new one. **Stop** is no
+longer required to change networks.
 
 ## Known behaviour worth knowing during acceptance
 

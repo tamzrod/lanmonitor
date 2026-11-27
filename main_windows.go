@@ -4,10 +4,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"net"
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -113,6 +113,7 @@ const (
 	idScan    = 1
 	idStop    = 2
 	idMonitor = 3
+	idRefresh = 4
 	idSubnet  = 10
 	idHint    = 12
 	idStatus  = 13
@@ -143,10 +144,14 @@ const (
 
 	bsAutoCheckBox  = 0x00000003
 	bsDefPushButton = 0x00000001
+	cbsAutoHScroll  = 0x0040
+	cbsDropDown     = 0x0002
 	cbsDropDownList = 0x0003
 	cbAddString     = 0x0143
 	cbGetCurSel     = 0x0147
+	cbResetContent  = 0x014B
 	cbSetCurSel     = 0x014E
+	cbnSelChange    = 1
 	esNumber        = 0x2000
 
 	mfString    = 0x00000000
@@ -184,11 +189,17 @@ var (
 	procCache sync.Map
 
 	mainWindow   uintptr
-	subnetEdit   uintptr
+	subnetCombo  uintptr
 	monitorCheck uintptr
 	statusLine   uintptr
 	instance     uintptr
 	guiFont      uintptr
+
+	// networkList mirrors the items currently shown in subnetCombo.
+	networkList []networkCandidate
+
+	// comboUpdating suppresses ComboBox notifications caused by our own edits.
+	comboUpdating bool
 
 	aboutWindow uintptr
 	aboutLink   uintptr
@@ -486,7 +497,7 @@ func handleContextCommand(cmd int) {
 	if !ok {
 		return
 	}
-	ip, err := hostAddress(controlText(subnetEdit), contextHost)
+	ip, err := hostAddress(controlText(subnetCombo), contextHost)
 	if err != nil {
 		showError("Enter a valid IPv4 /24 subnet before opening a host.")
 		return
@@ -766,7 +777,7 @@ func startDiscovery() {
 		}
 		return
 	}
-	base, canonical, err := parseSubnet(controlText(subnetEdit))
+	base, canonical, err := parseSubnet(controlText(subnetCombo))
 	if err != nil {
 		setStatus(err.Error())
 		return
@@ -786,7 +797,6 @@ func startDiscovery() {
 	discoverySeq++
 	discoveryProbes.Store(0)
 	discoveryFailures.Store(0)
-	call(user32, "EnableWindow", subnetEdit, uintptr(0))
 	setStatus("Discovery scanning " + canonical + " ...")
 	go runRound(base, ids, true, discoverySeq, session, currentToken())
 }
@@ -797,7 +807,7 @@ func startActive() {
 	if !monitoring || activeBusy {
 		return
 	}
-	base, canonical, err := parseSubnet(controlText(subnetEdit))
+	base, canonical, err := parseSubnet(controlText(subnetCombo))
 	if err != nil {
 		return
 	}
@@ -950,14 +960,12 @@ func setMonitoring(hwnd uintptr) {
 	if !monitoring {
 		discoveryQueued = false
 		cancelRounds()
-		call(user32, "EnableWindow", subnetEdit, uintptr(1))
 		setStatus("Monitoring off")
 		return
 	}
 
 	call(user32, "SetTimer", hwnd, uintptr(discoveryTimerID), uintptr(discoveryIntervalMS), uintptr(0))
 	call(user32, "SetTimer", hwnd, uintptr(activeTimerID), uintptr(activeIntervalMS), uintptr(0))
-	call(user32, "EnableWindow", subnetEdit, uintptr(0))
 	if discoveryBusy {
 		setStatus("Monitoring on - discovery already running")
 		return
@@ -974,7 +982,6 @@ func stopAll(hwnd uintptr) {
 	call(user32, "SendMessageW", monitorCheck, uintptr(bmSetCheck), uintptr(0), uintptr(0))
 	call(user32, "KillTimer", hwnd, uintptr(discoveryTimerID))
 	call(user32, "KillTimer", hwnd, uintptr(activeTimerID))
-	call(user32, "EnableWindow", subnetEdit, uintptr(1))
 	setStatus("Stopped")
 }
 
@@ -1037,6 +1044,12 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 			stopAll(hwnd)
 		case idMonitor:
 			setMonitoring(hwnd)
+		case idSubnet:
+			if !comboUpdating && uint32(w)>>16 == cbnSelChange {
+				selectNetwork()
+			}
+		case idRefresh:
+			refreshNetworks()
 		case idAbout:
 			showAbout()
 		}
@@ -1068,28 +1081,56 @@ func windowProc(hwnd, m, w, l uintptr) uintptr {
 	return call(user32, "DefWindowProcW", hwnd, m, w, l)
 }
 
-// defaultSubnet returns the canonical form of the first active non-loopback
-// IPv4 /24, or "" when the host has none.
-func defaultSubnet() string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return ""
+// refreshNetworkList rebuilds the ComboBox items. A manually typed CIDR is
+// kept when preserve is true; otherwise the best detected network is selected.
+func refreshNetworkList(preserve bool) {
+	current := strings.TrimSpace(controlText(subnetCombo))
+	networkList = detectedNetworks()
+	comboUpdating = true
+	call(user32, "SendMessageW", subnetCombo, uintptr(cbResetContent), uintptr(0), uintptr(0))
+	for _, c := range networkList {
+		call(user32, "SendMessageW", subnetCombo, uintptr(cbAddString), uintptr(0), c.Label())
 	}
-	for _, f := range ifaces {
-		if f.Flags&net.FlagUp == 0 || f.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := f.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			if _, canonical, err := parseSubnet(a.String()); err == nil {
-				return canonical
-			}
-		}
+	call(user32, "SendMessageW", subnetCombo, uintptr(cbSetCurSel), ^uintptr(0), uintptr(0))
+	switch {
+	case preserve && current != "":
+		call(user32, "SetWindowTextW", subnetCombo, current)
+	case len(networkList) > 0:
+		call(user32, "SetWindowTextW", subnetCombo, networkList[0].CIDR)
 	}
-	return ""
+	comboUpdating = false
+}
+
+// setComboCIDR clears the list selection before setting the edit text. Without
+// this, cancelling the drop-down can restore the selected label instead of the
+// CIDR that Scan expects.
+func setComboCIDR(cidr string) {
+	comboUpdating = true
+	call(user32, "SendMessageW", subnetCombo, uintptr(cbSetCurSel), ^uintptr(0), uintptr(0))
+	call(user32, "SetWindowTextW", subnetCombo, cidr)
+	comboUpdating = false
+}
+
+func refreshNetworks() {
+	refreshNetworkList(true)
+	if len(networkList) == 0 {
+		setStatus("No IPv4 networks detected - type a /24 manually")
+		return
+	}
+	setStatus(fmt.Sprintf("Network list refreshed - %d network(s)", len(networkList)))
+}
+
+func selectNetwork() {
+	idx := int(call(user32, "SendMessageW", subnetCombo, uintptr(cbGetCurSel), uintptr(0), uintptr(0)))
+	if idx < 0 || idx >= len(networkList) {
+		return
+	}
+	setComboCIDR(networkList[idx].CIDR)
+	if monitoring {
+		startDiscovery()
+		return
+	}
+	setStatus("Selected " + networkList[idx].CIDR + " - press Scan")
 }
 
 func main() {
@@ -1126,13 +1167,18 @@ func main() {
 		call(user32, "DrawMenuBar", mainWindow)
 	}
 
-	subnetEdit = createControl("EDIT", defaultSubnet(), wsBorder, 12, 12, 220, 26, idSubnet)
-	createControl("BUTTON", "Scan", 0, 242, 12, 80, 26, idScan)
-	createControl("BUTTON", "Stop", 0, 330, 12, 80, 26, idStop)
+	subnetCombo = createControl("COMBOBOX", "", cbsDropDown|cbsAutoHScroll|wsVScroll|wsTabStop, 12, 12, 380, 200, idSubnet)
+	createControl("BUTTON", "Refresh", 0, 400, 12, 70, 26, idRefresh)
+	createControl("BUTTON", "Scan", 0, 478, 12, 80, 26, idScan)
+	createControl("BUTTON", "Stop", 0, 566, 12, 80, 26, idStop)
 	monitorCheck = createControl("BUTTON", "Monitor mode", bsAutoCheckBox, 12, 46, 170, 26, idMonitor)
-	createControl("STATIC", "Discovery 15 s | Active 1 s", 0, 190, 48, 260, 24, idHint)
+	createControl("STATIC", "Select or type a /24 | 15 s / 1 s", 0, 190, 48, 320, 24, idHint)
 	statusLine = createControl("STATIC", "Ready - monitoring off", 0, 12, 78, clientWidth-30, 20, idStatus)
 	currentStatus = "Ready - monitoring off"
+	refreshNetworkList(false)
+	if len(networkList) == 0 {
+		setStatus("No IPv4 networks detected - type a /24 manually")
+	}
 
 	call(user32, "ShowWindow", mainWindow, uintptr(swShow))
 	call(user32, "UpdateWindow", mainWindow)
