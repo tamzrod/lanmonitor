@@ -42,7 +42,7 @@ func ping(h uintptr,a net.IP)(bool,uint32){
 }
 func start(full bool){
  if full&&busy {queued=true;return}
- if !full&&(fastBusy||!active||busy){return}
+ if !full&&(fastBusy||!active){return}
  if stop!=nil&&!busy&&!fastBusy {select{case <-stop:stop=nil;default:}}
  if stop!=nil {select{case <-stop:return;default:}}
  _,n,e:=net.ParseCIDR(read(edit));if e!=nil||n.IP.To4()==nil {label("Enter an IPv4 /24 subnet");return}
@@ -66,7 +66,7 @@ func start(full bool){
    h:=call(ip,"IcmpCreateFile");if h==^uintptr(0)||h==0{return};defer call(ip,"IcmpCloseHandle",h)
    a:=net.IPv4(base[0],base[1],base[2],byte(i));ok,rtt:=ping(h,a)
    select{case <-token:return;default:}
-   mu.Lock();hosts[i].observe(full,ok,rtt);mu.Unlock()
+   mu.Lock();if full||hosts[i].promoted{hosts[i].observe(full,ok,rtt)};mu.Unlock()
   }(i)}
   wg.Wait()
   kind:=uintptr(0);if full{kind=1}
@@ -98,6 +98,7 @@ func proc(h uintptr,m uint32,w,l uintptr)uintptr{
  case 1:start(true)
  case 2:halt()
  case 3:
+ if busy||fastBusy{call(u,"SendMessageW",auto,0xf1,0,0);halt();return 0}
  if call(u,"SendMessageW",auto,0xf0,0,0)==1{
  active=true;call(u,"SetTimer",h,1,15000,0);call(u,"SetTimer",h,2,1000,0);start(true)
  }else{halt()}
