@@ -20,6 +20,8 @@ func TestWin32StructLayout(t *testing.T) {
 		{"wndClass", unsafe.Sizeof(wndClass{}), 72},
 		{"paintStruct", unsafe.Sizeof(paintStruct{}), 72},
 		{"icmpEchoReply", unsafe.Sizeof(icmpEchoReply{}), 40},
+		{"nmhdr", unsafe.Sizeof(nmhdr{}), 24},
+		{"initCommonControlsEx", unsafe.Sizeof(initCommonControlsEx{}), 8},
 	}
 	for _, s := range sizes {
 		if s.got != s.want {
@@ -44,6 +46,11 @@ func TestWin32StructOffsets(t *testing.T) {
 		{"paintStruct.Reserved", unsafe.Offsetof(paintStruct{}.Reserved), 36},
 		{"icmpEchoReply.Data", unsafe.Offsetof(icmpEchoReply{}.Data), 16},
 		{"icmpEchoReply.Options", unsafe.Offsetof(icmpEchoReply{}.Options), 24},
+		{"nmhdr.HwndFrom", unsafe.Offsetof(nmhdr{}.HwndFrom), 0},
+		{"nmhdr.IDFrom", unsafe.Offsetof(nmhdr{}.IDFrom), 8},
+		{"nmhdr.Code", unsafe.Offsetof(nmhdr{}.Code), 16},
+		{"initCommonControlsEx.Size", unsafe.Offsetof(initCommonControlsEx{}.Size), 0},
+		{"initCommonControlsEx.ICC", unsafe.Offsetof(initCommonControlsEx{}.ICC), 4},
 	}
 	for _, o := range offsets {
 		if o.got != o.want {
