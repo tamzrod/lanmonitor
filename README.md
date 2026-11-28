@@ -1,7 +1,17 @@
-# LAN Monitor
+# LAN Monitor — Portable Real-Time IPv4 Subnet Monitor for Windows
 
 A single-file Windows GUI utility that shows which hosts in one IPv4 `/24`
 subnet answer ICMP echo requests, then keeps watching the ones that do.
+
+**A visual LAN ping monitor for IT, network administrators and industrial OT networks.** See all 254 usable IP addresses in a fixed, colour-coded grid, spot devices that stop responding, and open their management interfaces directly. No installation, account, monitoring server or database required.
+
+[Download Version 3](https://github.com/tamzrod/lanmonitor/releases/tag/v3) · [All releases](https://github.com/tamzrod/lanmonitor/releases)
+
+## Why LAN Monitor?
+
+Unlike a discovery-only IP scanner, LAN Monitor combines subnet discovery with continuous host reachability monitoring. Each IP address stays in the same grid position, making changes easy to spot at a glance. It is intended for quick local network troubleshooting and operational visibility rather than full network inventory or enterprise monitoring.
+
+Typical uses include checking office and home LAN devices, industrial Ethernet and SCADA networks, PLCs, RTUs, meters, inverters, gateways, and remote LANs reachable through VPNs. ICMP reachability does not establish device health or protocol availability.
 
 Version 3 adds a native **Help > About** dialog with the application icon and
 optional Maya and GCash donation QR images, a right-click menu on every IP cell,
@@ -249,6 +259,10 @@ longer depends on it: the selected CIDR is captured from the list and the
 committed state is authoritative. CI builds the executable on `windows-latest`,
 runs the tests on both Linux and Windows, checks the PE header and verifies the
 embedded icon resource with `cmd/verify-pe`.
+
+## Search keywords
+
+Portable LAN monitor, Windows network monitor, real-time IP address grid, visual subnet scanner, continuous ping monitor, IPv4 /24 network scanner, ICMP host availability, adaptive polling, network troubleshooting, industrial Ethernet, OT network monitoring, SCADA network diagnostics, VPN subnet monitoring, WireGuard LAN monitor, network device reachability, portable network utility, Go Win32.
 
 ## License
 
